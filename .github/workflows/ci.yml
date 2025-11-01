@@ -29,10 +29,11 @@ jobs:
         with:
           service: ${{ vars.SERVICE }}
           region: ${{ vars.REGION }}
-          project_id: ${{ secrets.PROJECT_ID }}
-          gcs_bucket_name: ${{ secrets.GCS_BUCKET_NAME }}
-          credentials_json: ${{ secrets.STORAGE_GOOGLE_APPLICATION_CREDENTIALS }}
           source: ./
+          env_vars: |-
+            GCS_BUCKET_NAME=${{ secrets.GCS_BUCKET_NAME }}
+            PROJECT_ID=${{ secrets.PROJECT_ID }}
+            STORAGE_GOOGLE_APPLICATION_CREDENTIALS=${{ secrets.STORAGE_GOOGLE_APPLICATION_CREDENTIALS }}
 
       - name: Show Output
         run: echo ${{ steps.deploy.outputs.url }}
