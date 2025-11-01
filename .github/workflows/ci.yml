@@ -32,7 +32,7 @@ jobs:
           source: ./
           env_vars: |-
             GCS_BUCKET_NAME=${{ secrets.GCS_BUCKET_NAME }}
-            PROJECT_ID=${{ secrets.PROJECT_ID }}
+            GCP_PROJECT_ID=${{ secrets.PROJECT_ID }}
             STORAGE_GOOGLE_APPLICATION_CREDENTIALS=${{ secrets.STORAGE_GOOGLE_APPLICATION_CREDENTIALS }}
 
       - name: Show Output
