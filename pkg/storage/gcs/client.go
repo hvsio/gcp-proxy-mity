@@ -15,7 +15,7 @@ type Client struct {
 func NewClient(ctx context.Context, projectID, bucketName string, credentialsPath string) (*Client, error) {
 	var opts []option.ClientOption
 	if credentialsPath != "" {
-		opts = append(opts, option.WithCredentialsFile(credentialsPath))
+		opts = append(opts, option.WithCredentialsJSON([]byte(credentialsPath)))
 	}
 
 	client, err := storage.NewClient(ctx, opts...)
