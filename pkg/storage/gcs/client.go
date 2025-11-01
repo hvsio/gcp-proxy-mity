@@ -2,6 +2,7 @@ package gcs
 
 import (
 	"context"
+	"encoding/base64"
 
 	"cloud.google.com/go/storage"
 	"google.golang.org/api/option"
@@ -15,7 +16,11 @@ type Client struct {
 func NewClient(ctx context.Context, projectID, bucketName string, credentialsPath string) (*Client, error) {
 	var opts []option.ClientOption
 	if credentialsPath != "" {
-		opts = append(opts, option.WithCredentialsJSON([]byte(credentialsPath)))
+		d, err := base64.StdEncoding.DecodeString(credentialsPath)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, option.WithCredentialsJSON(d))
 	}
 
 	client, err := storage.NewClient(ctx, opts...)
