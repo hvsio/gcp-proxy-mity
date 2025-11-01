@@ -11,4 +11,8 @@ COPY . .
 
 EXPOSE 8080
 
+RUN echo $GCS_BUCKET_NAME
+RUN echo $PROJECT_ID
+RUN echo $STORAGE_GOOGLE_APPLICATION_CREDENTIALS
+
 ENTRYPOINT ["go", "run", "cmd/server/main.go"]
