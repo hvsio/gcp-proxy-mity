@@ -1,21 +1,14 @@
 # Build stage
-# Note: Update the Go version to match go.mod if needed
-# For Go 1.23+, use: golang:1.23-alpine
 FROM golang:1.23-alpine AS builder
 
-# Install build dependencies
 RUN apk add --no-cache git ca-certificates
 
-# Set working directory
 WORKDIR /build
 
-# Copy go mod files
 COPY go.mod go.sum ./
 
-# Download dependencies
 RUN go mod download
 
-# Copy source code
 COPY . .
 
 # Build the application

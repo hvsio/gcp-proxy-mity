@@ -25,7 +25,7 @@ func Load() *Config {
 		Port:              getEnv("PORT", "8080"),
 		GCPProjectID:      getEnv("GCP_PROJECT_ID", ""),
 		GCSBucketName:     getEnv("GCS_BUCKET_NAME", ""),
-		GoogleCredentials: getEnv("GOOGLE_APPLICATION_CREDENTIALS", ""),
+		GoogleCredentials: getEnv("STORAGE_GOOGLE_APPLICATION_CREDENTIALS", ""),
 	}
 }
 
