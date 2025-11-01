@@ -45,7 +45,7 @@ func main() {
 	})
 
 	server := &http.Server{
-		Addr:    "0.0.0.0:" + cfg.Port,
+		Addr:    ":" + cfg.Port,
 		Handler: mux,
 	}
 
