@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -11,7 +12,6 @@ import (
 	"strings"
 
 	"gcp-proxy-mity/internal/service"
-	"gcp-proxy-mity/internal/storage"
 )
 
 type StorageHandler struct {
@@ -35,7 +35,7 @@ func (h *StorageHandler) WriteFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var requests []storage.WriteRequest
+	var requests []service.WriteRequest
 
 	for key, files := range r.MultipartForm.File {
 		for _, fileHeader := range files {
@@ -50,7 +50,7 @@ func (h *StorageHandler) WriteFiles(w http.ResponseWriter, r *http.Request) {
 				filePath = fileHeader.Filename
 			}
 
-			requests = append(requests, storage.WriteRequest{
+			requests = append(requests, service.WriteRequest{
 				Path:        filePath,
 				Content:     file,
 				ContentType: fileHeader.Header.Get("Content-Type"),
@@ -183,13 +183,13 @@ func (h *StorageHandler) WriteFileRaw(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
 
 	// Create write request with raw body data
-	request := storage.WriteRequest{
+	request := service.WriteRequest{
 		Path:        filePath,
 		Content:     r.Body,
 		ContentType: contentType,
 	}
 
-	response, err := h.service.WriteFiles(r.Context(), []storage.WriteRequest{request})
+	response, err := h.service.WriteFiles(r.Context(), []service.WriteRequest{request})
 	if err != nil {
 		http.Error(w, "Failed to write file: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -238,13 +238,13 @@ func (h *StorageHandler) WriteFileRawFromBody(w http.ResponseWriter, r *http.Req
 	r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
 
 	// Create write request with raw body data
-	request := storage.WriteRequest{
+	request := service.WriteRequest{
 		Path:        filePath,
 		Content:     r.Body,
 		ContentType: contentType,
 	}
 
-	response, err := h.service.WriteFiles(r.Context(), []storage.WriteRequest{request})
+	response, err := h.service.WriteFiles(r.Context(), []service.WriteRequest{request})
 	if err != nil {
 		http.Error(w, "Failed to write file: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -262,6 +262,72 @@ func (h *StorageHandler) WriteFileRawFromBody(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(response.FilesWritten[0])
+}
+
+// DeleteFile handles DELETE /api/v1/storage/files/{filePath}
+func (h *StorageHandler) DeleteFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := r.URL.Path
+	prefix := "/api/v1/storage/files/"
+
+	if !strings.HasPrefix(path, prefix) {
+		http.Error(w, "Invalid file path", http.StatusBadRequest)
+		return
+	}
+
+	filePath := strings.TrimPrefix(path, prefix)
+	if filePath == "" {
+		http.Error(w, "File path is required", http.StatusBadRequest)
+		return
+	}
+
+	err := h.service.DeleteFile(r.Context(), filePath)
+	if err != nil {
+		if errors.Is(err, service.ErrNotFound) {
+			http.Error(w, "File not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Failed to delete file: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DeleteFiles handles POST /api/v1/storage/files/delete
+func (h *StorageHandler) DeleteFiles(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var request struct {
+		FilePaths []string `json:"file_paths"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if len(request.FilePaths) == 0 {
+		http.Error(w, "No file paths provided", http.StatusBadRequest)
+		return
+	}
+
+	response, err := h.service.DeleteFiles(r.Context(), request.FilePaths)
+	if err != nil {
+		http.Error(w, "Failed to delete files: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
 // detectContentType detects content type from file extension
@@ -324,9 +390,9 @@ func (h *StorageHandler) SetupRoutes(mux *http.ServeMux) {
 	// to avoid conflicts with ReadFile
 	mux.HandleFunc("/api/v1/storage/files/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/v1/storage/files/")
-		
+
 		// Reserved paths
-		if path == "read" || path == "raw" {
+		if path == "read" || path == "raw" || path == "delete" {
 			if path == "read" && r.Method == http.MethodPost {
 				h.ReadFiles(w, r)
 				return
@@ -335,13 +401,19 @@ func (h *StorageHandler) SetupRoutes(mux *http.ServeMux) {
 				h.WriteFileRawFromBody(w, r)
 				return
 			}
+			if path == "delete" && r.Method == http.MethodPost {
+				h.DeleteFiles(w, r)
+				return
+			}
 		}
-		
-		// PUT = write raw file, GET = read file
+
+		// PUT = write raw file, GET = read file, DELETE = delete file
 		if r.Method == http.MethodPut {
 			h.WriteFileRaw(w, r)
 		} else if r.Method == http.MethodGet {
 			h.ReadFile(w, r)
+		} else if r.Method == http.MethodDelete {
+			h.DeleteFile(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -349,4 +421,7 @@ func (h *StorageHandler) SetupRoutes(mux *http.ServeMux) {
 
 	// Explicit read endpoint
 	mux.HandleFunc("/api/v1/storage/files/read", h.ReadFiles)
+
+	// Explicit delete (batch) endpoint
+	mux.HandleFunc("/api/v1/storage/files/delete", h.DeleteFiles)
 }

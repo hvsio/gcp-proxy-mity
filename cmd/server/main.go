@@ -11,9 +11,9 @@ import (
 
 	"gcp-proxy-mity/internal/config"
 	"gcp-proxy-mity/internal/handler"
+	"gcp-proxy-mity/internal/infrastructure/gcs"
 	"gcp-proxy-mity/internal/service"
-	"gcp-proxy-mity/internal/storage"
-	"gcp-proxy-mity/pkg/storage/gcs"
+	gcsclient "gcp-proxy-mity/pkg/storage/gcs"
 )
 
 func main() {
@@ -26,13 +26,13 @@ func main() {
 	defer cancel()
 
 	// Initialize GCS client
-	gcsClient, err := gcs.NewClient(ctx, cfg.GCPProjectID, cfg.GCSBucketName, cfg.GoogleCredentials)
+	gcsClient, err := gcsclient.NewClient(ctx, cfg.GCPProjectID, cfg.GCSBucketName, cfg.GoogleCredentials)
 	if err != nil {
 		log.Fatalf("Failed to create GCS client: %v", err)
 	}
 	defer gcsClient.Close()
 
-	gcsStorage := storage.NewGCSStorage(gcsClient)
+	gcsStorage := gcs.NewStorage(gcsClient)
 	storageService := service.NewStorageService(gcsStorage)
 	storageHandler := handler.NewStorageHandler(storageService)
 

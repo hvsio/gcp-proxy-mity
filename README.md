@@ -8,6 +8,8 @@ A Golang microservice for proxying GCP services, starting with Google Cloud Stor
 - **Write single file (raw)**: Upload raw binary media data directly in request body
 - **Read multiple files**: Download multiple files from Cloud Storage
 - **Read single file**: Download a single file from Cloud Storage
+- **Delete single file**: Delete one file by path (`DELETE /api/v1/storage/files/{path}`)
+- **Delete multiple files**: Delete many files in one request (`POST /api/v1/storage/files/delete`)
 - Clean architecture with separation of concerns
 - Comprehensive unit tests
 - Graceful shutdown
@@ -251,6 +253,48 @@ curl http://localhost:8080/api/v1/storage/files/path/to/file.mp4 \
   --output downloaded.mp4
 ```
 
+### Delete Single File
+```
+DELETE /api/v1/storage/files/{filePath}
+```
+
+Returns `204 No Content` on success, or `404 Not Found` if the file does not exist.
+
+Example:
+```bash
+curl -X DELETE http://localhost:8080/api/v1/storage/files/photos/photo.jpg
+```
+
+### Delete Multiple Files
+```
+POST /api/v1/storage/files/delete
+Content-Type: application/json
+
+Body: {
+  "file_paths": ["path/to/file1.jpg", "path/to/file2.jpg"]
+}
+```
+
+Response:
+```json
+{
+  "deleted": ["path/to/file1.jpg"],
+  "errors": [
+    {
+      "file_path": "path/to/file2.jpg",
+      "error": "object not found"
+    }
+  ]
+}
+```
+
+Example:
+```bash
+curl -X POST http://localhost:8080/api/v1/storage/files/delete \
+  -H "Content-Type: application/json" \
+  -d '{"file_paths": ["photos/a.jpg", "photos/b.jpg"]}'
+```
+
 ## Testing
 
 Run all tests:
@@ -265,8 +309,8 @@ go test -cover ./...
 
 Run tests for a specific package:
 ```bash
-go test ./internal/storage
 go test ./internal/service
+go test ./internal/infrastructure/gcs
 go test ./internal/config
 ```
 
@@ -275,8 +319,8 @@ go test ./internal/config
 The application follows clean architecture principles:
 
 1. **Handler Layer** (`internal/handler`): HTTP request/response handling
-2. **Service Layer** (`internal/service`): Business logic
-3. **Storage Layer** (`internal/storage`): Storage abstraction and GCS implementation
+2. **Service Layer** (`internal/service`): Business logic and storage interface (contract)
+3. **Infrastructure** (`internal/infrastructure/gcs`): GCS-specific storage implementation
 4. **Config** (`internal/config`): Configuration management
 
 This structure allows for:
