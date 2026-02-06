@@ -35,18 +35,28 @@ jobs:
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
 
-      - name: Configure Docker for GCR
-        run: gcloud auth configure-docker
+      - name: Create Artifact Registry repo (if not exists)
+        run: |
+          gcloud artifacts repositories describe $SERVICE_NAME \
+            --location=$GCP_REGION --project=$PROJECT_ID 2>/dev/null || \
+          gcloud artifacts repositories create $SERVICE_NAME \
+            --repository-format=docker \
+            --location=$GCP_REGION \
+            --project=$PROJECT_ID
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker $GCP_REGION-docker.pkg.dev
 
       - name: Build Docker image
         run: |
-          docker build -t gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA .
-          docker tag gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA gcr.io/$PROJECT_ID/$SERVICE_NAME:latest
+          docker build -t $GCP_REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME:$GITHUB_SHA .
+          docker tag $GCP_REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME:$GITHUB_SHA \
+            $GCP_REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME:latest
 
       - name: Push Docker image
         run: |
-          docker push gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA
-          docker push gcr.io/$PROJECT_ID/$SERVICE_NAME:latest
+          docker push $GCP_REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME:$GITHUB_SHA
+          docker push $GCP_REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME:latest
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -63,7 +73,7 @@ jobs:
           oauth_client_id = "${{ secrets.OAUTH_CLIENT_ID }}"
           oauth_client_secret = "${{ secrets.OAUTH_CLIENT_SECRET }}"
           allowed_users = ${{ secrets.ALLOWED_USERS }}
-          container_image = "gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA"
+          container_image = "$GCP_REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME:$GITHUB_SHA"
           EOF
 
       - name: Terraform Init

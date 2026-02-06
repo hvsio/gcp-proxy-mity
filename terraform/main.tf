@@ -221,7 +221,7 @@ resource "google_cloud_run_v2_service" "app" {
     }
     
     containers {
-      image = var.container_image != "" ? var.container_image : "gcr.io/${var.project_id}/gcp-proxy-mity:latest"
+      image = var.container_image != "" ? var.container_image : "${var.region}-docker.pkg.dev/${var.project_id}/gcp-proxy-mity/gcp-proxy-mity:latest"
       
       ports {
         container_port = 8080
