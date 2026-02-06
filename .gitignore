@@ -40,4 +40,5 @@ go.work
 Thumbs.db
 
 # Random MD files
-*.md
+*.mdterraform/.terraform/
+terraform/terraform.tfvars

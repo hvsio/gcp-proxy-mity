@@ -1,9 +1,16 @@
-name: Deploy to Cloud Run from Source
+name: Deploy Infrastructure and App to GCP
 
 on:
   push:
     branches:
       - main
+      - master
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ vars.REGION || 'europe-west4' }}
+  SERVICE_NAME: gcp-proxy-mity
 
 jobs:
   deploy:
@@ -14,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Google Auth
         id: auth
@@ -23,20 +30,67 @@ jobs:
           workload_identity_provider: '${{ secrets.WIF_PROVIDER }}'
           service_account: '${{ secrets.WIF_SERVICE_ACCOUNT }}'
 
-      - name: Deploy to Cloud Run
-        id: deploy
-        uses: google-github-actions/deploy-cloudrun@v3
+      - name: Setup Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
         with:
-          service: ${{ vars.SERVICE }}
-          region: ${{ vars.REGION }}
-          source: ./
-          env_vars: |-
-            GCS_BUCKET_NAME=${{ secrets.GCS_BUCKET_NAME }}
-            GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }}
-            STORAGE_GOOGLE_APPLICATION_CREDENTIALS=${{ secrets.STORAGE_GOOGLE_APPLICATION_CREDENTIALS }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
 
-      - name: Show Output
-        run: echo ${{ steps.deploy.outputs.url }}
-      
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker
 
-        
+      - name: Build Docker image
+        run: |
+          docker build -t gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA .
+          docker tag gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA gcr.io/$PROJECT_ID/$SERVICE_NAME:latest
+
+      - name: Push Docker image
+        run: |
+          docker push gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA
+          docker push gcr.io/$PROJECT_ID/$SERVICE_NAME:latest
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Create terraform.tfvars
+        run: |
+          cd terraform
+          cat > terraform.tfvars << EOF
+          project_id = "${{ secrets.GCP_PROJECT_ID }}"
+          region = "$GCP_REGION"
+          domain_name = "${{ secrets.DOMAIN_NAME || '' }}"
+          oauth_client_id = "${{ secrets.OAUTH_CLIENT_ID }}"
+          oauth_client_secret = "${{ secrets.OAUTH_CLIENT_SECRET }}"
+          allowed_users = ${{ secrets.ALLOWED_USERS }}
+          container_image = "gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA"
+          EOF
+
+      - name: Terraform Init
+        run: |
+          cd terraform
+          terraform init
+
+      - name: Terraform Plan
+        run: |
+          cd terraform
+          terraform plan -out=tfplan
+
+      - name: Terraform Apply
+        run: |
+          cd terraform
+          terraform apply -auto-approve tfplan
+
+      - name: Get Deployment Info
+        run: |
+          cd terraform
+          echo "## Deployment Complete! 🚀" >> $GITHUB_STEP_SUMMARY
+          echo "- **Load Balancer IP:** $(terraform output -raw load_balancer_ip)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Application URL:** https://$(terraform output -raw load_balancer_ip)" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "- **Custom Domain:** https://${{ secrets.DOMAIN_NAME }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **DNS Setup:** Point A record to $(terraform output -raw load_balancer_ip)" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- **Health Check:** https://$(terraform output -raw load_balancer_ip)/health" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Access the application and authenticate with your Google account!" >> $GITHUB_STEP_SUMMARY

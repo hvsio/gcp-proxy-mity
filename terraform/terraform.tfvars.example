@@ -1,0 +1,22 @@
+# Example terraform.tfvars file
+# Copy this to terraform.tfvars and fill in your values
+
+# Required: Your GCP Project ID
+project_id = "homey-bw58"
+
+# Optional: Region (defaults to europe-west4)
+region = "europe-west4"
+
+# Optional: Custom domain name (if you have one)
+# If not provided, you'll access via the load balancer IP
+domain_name = "api.yourdomain.com"
+
+# Required: OAuth client credentials for IAP
+# You need to create these in Google Cloud Console > APIs & Credentials > OAuth 2.0 Client IDs
+oauth_client_id = "your-oauth-client-id.googleusercontent.com"
+oauth_client_secret = "your-oauth-client-secret"
+
+# Required: List of email addresses allowed to access the application
+allowed_users = [
+  "your-email@gmail.com"
+]
