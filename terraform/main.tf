@@ -75,7 +75,9 @@ resource "google_project_service" "apis" {
     "storage.googleapis.com",
     "compute.googleapis.com",
     "iap.googleapis.com",
-    "certificatemanager.googleapis.com"
+    "certificatemanager.googleapis.com",
+    "servicenetworking.googleapis.com",
+    "secretmanager.googleapis.com"
   ])
   
   project = var.project_id
@@ -99,6 +101,23 @@ resource "google_compute_subnetwork" "subnet" {
   network       = google_compute_network.vpc.id
   
   private_ip_google_access = true
+}
+
+# Private Services Access for AlloyDB
+resource "google_compute_global_address" "private_ip_range" {
+  name          = "gcp-proxy-mity-private-ip"
+  purpose       = "VPC_PEERING"
+  address_type  = "INTERNAL"
+  prefix_length = 16
+  network       = google_compute_network.vpc.id
+}
+
+resource "google_service_networking_connection" "private_vpc_connection" {
+  network                 = google_compute_network.vpc.id
+  service                 = "servicenetworking.googleapis.com"
+  reserved_peering_ranges = [google_compute_global_address.private_ip_range.name]
+
+  depends_on = [google_project_service.apis]
 }
 
 # Serverless VPC Connector for Cloud Run
@@ -145,7 +164,8 @@ resource "google_alloydb_cluster" "cluster" {
   
   depends_on = [
     google_project_service.apis,
-    google_compute_network.vpc
+    google_compute_network.vpc,
+    google_service_networking_connection.private_vpc_connection
   ]
 }
 
