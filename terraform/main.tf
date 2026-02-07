@@ -228,6 +228,11 @@ resource "google_project_iam_member" "alloydb_client" {
   member  = "serviceAccount:${google_service_account.app_sa.email}"
 }
 
+import {
+  to = google_cloud_run_v2_service.app
+  id = "projects/${var.project_id}/locations/${var.region}/services/gcp-proxy-mity"
+}
+
 # Cloud Run Service
 resource "google_cloud_run_v2_service" "app" {
   provider = google-beta
