@@ -122,9 +122,12 @@ resource "google_alloydb_cluster" "cluster" {
   
   cluster_id = "gcp-proxy-mity-cluster"
   location   = var.region
-  network    = google_compute_network.vpc.id
   
   cluster_type = "PRIMARY"
+  
+  network_config {
+    network = google_compute_network.vpc.id
+  }
   
   automated_backup_policy {
     enabled = true
