@@ -128,7 +128,7 @@ resource "google_alloydb_cluster" "cluster" {
   
   automated_backup_policy {
     enabled = true
-    backup_window = "02:00-04:00"
+    backup_window = "7200s"
     location = var.region
     
     weekly_schedule {
