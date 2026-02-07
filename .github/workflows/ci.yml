@@ -69,7 +69,6 @@ jobs:
           cat > terraform.tfvars << EOF
           project_id = "${{ secrets.GCP_PROJECT_ID }}"
           region = "$GCP_REGION"
-          domain_name = "${{ secrets.DOMAIN_NAME || '' }}"
           oauth_client_id = "${{ secrets.OAUTH_CLIENT_ID }}"
           oauth_client_secret = "${{ secrets.OAUTH_CLIENT_SECRET }}"
           allowed_users = ${{ secrets.ALLOWED_USERS }}
@@ -96,11 +95,7 @@ jobs:
           cd terraform
           echo "## Deployment Complete! 🚀" >> $GITHUB_STEP_SUMMARY
           echo "- **Load Balancer IP:** $(terraform output -raw load_balancer_ip)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Application URL:** https://$(terraform output -raw load_balancer_ip)" >> $GITHUB_STEP_SUMMARY
-          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
-            echo "- **Custom Domain:** https://${{ secrets.DOMAIN_NAME }}" >> $GITHUB_STEP_SUMMARY
-            echo "- **DNS Setup:** Point A record to $(terraform output -raw load_balancer_ip)" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "- **Health Check:** https://$(terraform output -raw load_balancer_ip)/health" >> $GITHUB_STEP_SUMMARY
+          echo "- **Application URL:** http://$(terraform output -raw load_balancer_ip)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Health Check:** http://$(terraform output -raw load_balancer_ip)/health" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Access the application and authenticate with your Google account!" >> $GITHUB_STEP_SUMMARY
