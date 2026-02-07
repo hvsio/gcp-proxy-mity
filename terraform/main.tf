@@ -266,32 +266,32 @@ resource "google_cloud_run_v2_service" "app" {
       }
       
       env {
-        name  = "DATABASE_TYPE"
+        name  = "DB_TYPE"
         value = "postgres"
       }
       
       env {
-        name  = "DATABASE_HOST"
+        name  = "DB_HOST"
         value = google_alloydb_instance.instance.ip_address
       }
       
       env {
-        name  = "DATABASE_PORT"
+        name  = "DB_PORT"
         value = "5432"
       }
       
       env {
-        name  = "DATABASE_NAME"
+        name  = "DB_DATABASE_NAME"
         value = "postgres"
       }
       
       env {
-        name  = "DATABASE_USERNAME"
+        name  = "DB_USERNAME"
         value = "postgres"
       }
       
       env {
-        name = "DATABASE_PASSWORD"
+        name = "DB_PASSWORD"
         value_source {
           secret_key_ref {
             secret  = google_secret_manager_secret.db_password.secret_id
