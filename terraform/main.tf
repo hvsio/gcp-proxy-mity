@@ -124,7 +124,7 @@ resource "google_alloydb_cluster" "cluster" {
   location   = var.region
   network    = google_compute_network.vpc.id
   
-  cluster_type = "SECONDARY" # For AlloyDB Omni
+  cluster_type = "PRIMARY"
   
   automated_backup_policy {
     enabled = true
