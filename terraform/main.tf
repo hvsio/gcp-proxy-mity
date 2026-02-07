@@ -16,6 +16,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.0"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
 }
 
@@ -339,6 +343,15 @@ resource "google_cloud_run_v2_service" "app" {
   ]
 }
 
+# Allow unauthenticated access to Cloud Run (IAP on the LB handles auth)
+resource "google_cloud_run_v2_service_iam_member" "public" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.app.name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
 # Secret for database password
 resource "google_secret_manager_secret" "db_password" {
   secret_id = "alloydb-password"
@@ -411,19 +424,51 @@ resource "google_compute_url_map" "default" {
   default_service = google_compute_backend_service.default.id
 }
 
-# HTTP Proxy
-resource "google_compute_target_http_proxy" "default" {
-  name    = "gcp-proxy-mity-http-proxy"
-  url_map = google_compute_url_map.default.id
+# Self-signed TLS certificate
+resource "tls_private_key" "default" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+resource "tls_self_signed_cert" "default" {
+  private_key_pem = tls_private_key.default.private_key_pem
+
+  subject {
+    common_name  = google_compute_global_address.default.address
+    organization = "GCP Proxy Mity"
+  }
+
+  validity_period_hours = 8760 # 1 year
+
+  allowed_uses = [
+    "key_encipherment",
+    "digital_signature",
+    "server_auth",
+  ]
+
+  ip_addresses = [google_compute_global_address.default.address]
+}
+
+resource "google_compute_ssl_certificate" "default" {
+  name        = "gcp-proxy-mity-self-signed"
+  private_key = tls_private_key.default.private_key_pem
+  certificate = tls_self_signed_cert.default.cert_pem
+}
+
+# HTTPS Proxy
+resource "google_compute_target_https_proxy" "default" {
+  name             = "gcp-proxy-mity-https-proxy"
+  url_map          = google_compute_url_map.default.id
+  ssl_certificates = [google_compute_ssl_certificate.default.id]
 
   depends_on = [google_project_service.apis]
 }
 
-# Forwarding Rule (HTTP)
-resource "google_compute_global_forwarding_rule" "http" {
-  name       = "gcp-proxy-mity-http-forwarding-rule"
-  target     = google_compute_target_http_proxy.default.id
-  port_range = "80"
+# Forwarding Rule (HTTPS)
+resource "google_compute_global_forwarding_rule" "https" {
+  name       = "gcp-proxy-mity-https-forwarding-rule"
+  target     = google_compute_target_https_proxy.default.id
+  port_range = "443"
   ip_address = google_compute_global_address.default.id
 }
 
