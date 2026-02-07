@@ -158,7 +158,7 @@ resource "google_alloydb_instance" "instance" {
   instance_type = "PRIMARY"
   
   machine_config {
-    cpu_count = 1
+    cpu_count = 2
   }
   
   depends_on = [google_alloydb_cluster.cluster]
