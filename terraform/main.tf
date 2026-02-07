@@ -12,6 +12,10 @@ terraform {
       source  = "hashicorp/google-beta"
       version = "~> 5.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
   }
 }
 
@@ -144,6 +148,11 @@ resource "google_alloydb_cluster" "cluster" {
   
   cluster_type = "PRIMARY"
   
+  initial_user {
+    user     = "postgres"
+    password = random_password.db_password.result
+  }
+
   network_config {
     network = google_compute_network.vpc.id
   }
@@ -291,6 +300,11 @@ resource "google_cloud_run_v2_service" "app" {
       }
       
       env {
+        name  = "DB_SSL_MODE"
+        value = "require"
+      }
+
+      env {
         name = "DB_PASSWORD"
         value_source {
           secret_key_ref {
@@ -305,6 +319,17 @@ resource "google_cloud_run_v2_service" "app" {
           cpu    = "1"
           memory = "1Gi"
         }
+      }
+
+      startup_probe {
+        http_get {
+          path = "/health"
+          port = 8080
+        }
+        initial_delay_seconds = 5
+        period_seconds        = 5
+        failure_threshold     = 12
+        timeout_seconds       = 3
       }
     }
     
@@ -332,9 +357,14 @@ resource "google_secret_manager_secret" "db_password" {
   depends_on = [google_project_service.apis]
 }
 
+resource "random_password" "db_password" {
+  length  = 32
+  special = false
+}
+
 resource "google_secret_manager_secret_version" "db_password" {
   secret      = google_secret_manager_secret.db_password.id
-  secret_data = "your-secure-password-here" # TODO: Generate random password
+  secret_data = random_password.db_password.result
 }
 
 # IAM for accessing secrets

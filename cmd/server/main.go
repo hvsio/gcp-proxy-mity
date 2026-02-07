@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -34,38 +35,21 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Initialize database
-	dbPool, err := initializeDatabase(ctx, cfg.Database)
-	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
-	}
-	defer dbPool.Close()
+	var ready atomic.Bool
 
-	// Run database migrations
-	if err := database.RunMigrations(ctx, dbPool, migrationSQL); err != nil {
-		log.Fatalf("Failed to run database migrations: %v", err)
-	}
-
-	// Initialize database service
-	_ = database.NewPostgresService(dbPool) // TODO: Wire up database service to handlers
-
-	// Initialize GCS client
-	gcsClient, err := gcsclient.NewClient(ctx, cfg.Storage.GCPProjectID, cfg.Storage.GCSBucketName, cfg.Storage.GoogleCredentials)
-	if err != nil {
-		log.Fatalf("Failed to create GCS client: %v", err)
-	}
-	defer gcsClient.Close()
-
-	gcsStorage := gcs.NewStorage(gcsClient)
-	storageService := service.NewStorageService(gcsStorage)
-	storageHandler := handler.NewStorageHandler(storageService)
-
-	// Setup routes
 	mux := http.NewServeMux()
-	storageHandler.SetupRoutes(mux)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
+	})
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		if ready.Load() {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("READY"))
+		} else {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("NOT READY"))
+		}
 	})
 
 	server := &http.Server{
@@ -80,7 +64,33 @@ func main() {
 		}
 	}()
 
-	// Wait for interrupt signal to gracefully shutdown the server
+	// Initialize dependencies after the server is listening
+	dbPool, err := initializeDatabaseWithRetry(ctx, cfg.Database)
+	if err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	defer dbPool.Close()
+
+	if err := database.RunMigrations(ctx, dbPool, migrationSQL); err != nil {
+		log.Fatalf("Failed to run database migrations: %v", err)
+	}
+
+	_ = database.NewPostgresService(dbPool)
+
+	gcsClient, err := gcsclient.NewClient(ctx, cfg.Storage.GCPProjectID, cfg.Storage.GCSBucketName, cfg.Storage.GoogleCredentials)
+	if err != nil {
+		log.Fatalf("Failed to create GCS client: %v", err)
+	}
+	defer gcsClient.Close()
+
+	gcsStorage := gcs.NewStorage(gcsClient)
+	storageService := service.NewStorageService(gcsStorage)
+	storageHandler := handler.NewStorageHandler(storageService)
+	storageHandler.SetupRoutes(mux)
+
+	ready.Store(true)
+	log.Println("All dependencies initialized, service is ready")
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -97,7 +107,22 @@ func main() {
 	log.Println("Server exited")
 }
 
-// initializeDatabase creates a database connection pool based on configuration
+func initializeDatabaseWithRetry(ctx context.Context, dbConfig config.DatabaseConfig) (*pgxpool.Pool, error) {
+	var pool *pgxpool.Pool
+	var err error
+	for attempt := 1; attempt <= 5; attempt++ {
+		pool, err = initializeDatabase(ctx, dbConfig)
+		if err == nil {
+			return pool, nil
+		}
+		log.Printf("Database connection attempt %d/5 failed: %v", attempt, err)
+		if attempt < 5 {
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		}
+	}
+	return nil, fmt.Errorf("failed after 5 attempts: %w", err)
+}
+
 func initializeDatabase(ctx context.Context, dbConfig config.DatabaseConfig) (*pgxpool.Pool, error) {
 	switch dbConfig.Type {
 	case "cloudsql":
