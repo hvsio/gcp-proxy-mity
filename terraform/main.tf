@@ -431,21 +431,45 @@ resource "google_compute_managed_ssl_certificate" "default" {
   depends_on = [google_project_service.apis]
 }
 
-# HTTPS Proxy
+# HTTPS Proxy (only when domain is set)
 resource "google_compute_target_https_proxy" "default" {
+  count = var.domain_name != "" ? 1 : 0
+
   name   = "gcp-proxy-mity-https-proxy"
   url_map = google_compute_url_map.default.id
   
-  ssl_certificates = var.domain_name != "" ? [google_compute_managed_ssl_certificate.default[0].id] : []
+  ssl_certificates = [google_compute_managed_ssl_certificate.default[0].id]
   
   depends_on = [google_project_service.apis]
 }
 
-# Forwarding Rule
-resource "google_compute_global_forwarding_rule" "default" {
+# HTTP Proxy (when no domain is set)
+resource "google_compute_target_http_proxy" "default" {
+  count = var.domain_name == "" ? 1 : 0
+
+  name    = "gcp-proxy-mity-http-proxy"
+  url_map = google_compute_url_map.default.id
+
+  depends_on = [google_project_service.apis]
+}
+
+# Forwarding Rule (HTTPS)
+resource "google_compute_global_forwarding_rule" "https" {
+  count = var.domain_name != "" ? 1 : 0
+
   name       = "gcp-proxy-mity-forwarding-rule"
-  target     = google_compute_target_https_proxy.default.id
+  target     = google_compute_target_https_proxy.default[0].id
   port_range = "443"
+  ip_address = google_compute_global_address.default.id
+}
+
+# Forwarding Rule (HTTP)
+resource "google_compute_global_forwarding_rule" "http" {
+  count = var.domain_name == "" ? 1 : 0
+
+  name       = "gcp-proxy-mity-http-forwarding-rule"
+  target     = google_compute_target_http_proxy.default[0].id
+  port_range = "80"
   ip_address = google_compute_global_address.default.id
 }
 
