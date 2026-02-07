@@ -261,11 +261,6 @@ resource "google_cloud_run_v2_service" "app" {
       }
       
       env {
-        name  = "PORT"
-        value = "8080"
-      }
-      
-      env {
         name  = "DATABASE_TYPE"
         value = "postgres"
       }
