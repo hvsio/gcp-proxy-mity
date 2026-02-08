@@ -1,5 +1,5 @@
 # GCP Proxy Mity Infrastructure
-# Cloud Run + AlloyDB Omni + Cloud IAP + Private Networking
+# Cloud Run + AlloyDB Omni + Private Networking
 
 terraform {
   required_version = ">= 1.0"
@@ -16,10 +16,6 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.0"
     }
-    tls = {
-      source  = "hashicorp/tls"
-      version = "~> 4.0"
-    }
   }
 }
 
@@ -33,22 +29,6 @@ variable "region" {
   description = "GCP Region"
   type        = string
   default     = "europe-west4"
-}
-
-variable "oauth_client_id" {
-  description = "OAuth 2.0 client ID for IAP"
-  type        = string
-}
-
-variable "oauth_client_secret" {
-  description = "OAuth 2.0 client secret for IAP"
-  type        = string
-  sensitive   = true
-}
-
-variable "allowed_users" {
-  description = "List of users allowed to access via IAP (email addresses)"
-  type        = list(string)
 }
 
 variable "container_image" {
@@ -76,7 +56,7 @@ resource "google_project_service" "apis" {
     "alloydb.googleapis.com",
     "storage.googleapis.com",
     "compute.googleapis.com",
-    "iap.googleapis.com",
+
     "servicenetworking.googleapis.com",
     "secretmanager.googleapis.com"
   ])
@@ -343,7 +323,7 @@ resource "google_cloud_run_v2_service" "app" {
   ]
 }
 
-# Allow unauthenticated access to Cloud Run (IAP on the LB handles auth)
+# Allow unauthenticated access to Cloud Run (auth handled by frontend)
 resource "google_cloud_run_v2_service_iam_member" "public" {
   project  = var.project_id
   location = var.region
@@ -380,113 +360,9 @@ resource "google_secret_manager_secret_iam_member" "app_sa_secret_access" {
   member    = "serviceAccount:${google_service_account.app_sa.email}"
 }
 
-# Application Load Balancer
-resource "google_compute_global_address" "default" {
-  name = "gcp-proxy-mity-ip"
-  
-  depends_on = [google_project_service.apis]
-}
-
-# Backend service for Cloud Run
-resource "google_compute_region_network_endpoint_group" "cloudrun_neg" {
-  name                  = "gcp-proxy-mity-neg"
-  network_endpoint_type = "SERVERLESS"
-  region                = var.region
-  
-  cloud_run {
-    service = google_cloud_run_v2_service.app.name
-  }
-  
-  depends_on = [google_cloud_run_v2_service.app]
-}
-
-resource "google_compute_backend_service" "default" {
-  name        = "gcp-proxy-mity-backend"
-  protocol    = "HTTP"
-  timeout_sec = 30
-  
-  backend {
-    group = google_compute_region_network_endpoint_group.cloudrun_neg.id
-  }
-  
-  # Enable IAP
-  iap {
-    oauth2_client_id     = var.oauth_client_id
-    oauth2_client_secret = var.oauth_client_secret
-  }
-  
-  depends_on = [google_project_service.apis]
-}
-
-# URL Map
-resource "google_compute_url_map" "default" {
-  name            = "gcp-proxy-mity-urlmap"
-  default_service = google_compute_backend_service.default.id
-}
-
-# Self-signed TLS certificate
-resource "tls_private_key" "default" {
-  algorithm = "RSA"
-  rsa_bits  = 2048
-}
-
-resource "tls_self_signed_cert" "default" {
-  private_key_pem = tls_private_key.default.private_key_pem
-
-  subject {
-    common_name  = google_compute_global_address.default.address
-    organization = "GCP Proxy Mity"
-  }
-
-  validity_period_hours = 8760 # 1 year
-
-  allowed_uses = [
-    "key_encipherment",
-    "digital_signature",
-    "server_auth",
-  ]
-
-  ip_addresses = [google_compute_global_address.default.address]
-}
-
-resource "google_compute_ssl_certificate" "default" {
-  name        = "gcp-proxy-mity-self-signed"
-  private_key = tls_private_key.default.private_key_pem
-  certificate = tls_self_signed_cert.default.cert_pem
-}
-
-# HTTPS Proxy
-resource "google_compute_target_https_proxy" "default" {
-  name             = "gcp-proxy-mity-https-proxy"
-  url_map          = google_compute_url_map.default.id
-  ssl_certificates = [google_compute_ssl_certificate.default.id]
-
-  depends_on = [google_project_service.apis]
-}
-
-# Forwarding Rule (HTTPS)
-resource "google_compute_global_forwarding_rule" "https" {
-  name       = "gcp-proxy-mity-https-forwarding-rule"
-  target     = google_compute_target_https_proxy.default.id
-  port_range = "443"
-  ip_address = google_compute_global_address.default.id
-}
-
-# IAM binding for IAP access
-resource "google_iap_web_backend_service_iam_binding" "binding" {
-  web_backend_service = google_compute_backend_service.default.name
-  role                = "roles/iap.httpsResourceAccessor"
-  members             = [for user in var.allowed_users : "user:${user}"]
-}
-
 # Outputs
-output "load_balancer_ip" {
-  description = "IP address of the load balancer"
-  value       = google_compute_global_address.default.address
-}
-
 output "cloud_run_url" {
-  description = "URL of the Cloud Run service (internal)"
+  description = "URL of the Cloud Run service"
   value       = google_cloud_run_v2_service.app.uri
 }
 
