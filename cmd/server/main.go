@@ -15,9 +15,10 @@ import (
 	"gcp-proxy-mity/internal/handler"
 	"gcp-proxy-mity/internal/infrastructure/database"
 	"gcp-proxy-mity/internal/infrastructure/gcs"
+	"gcp-proxy-mity/internal/middleware"
 	"gcp-proxy-mity/internal/service"
 	gcsclient "gcp-proxy-mity/pkg/storage/gcs"
-	
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	_ "embed"
@@ -52,9 +53,26 @@ func main() {
 		}
 	})
 
+	iapValidator, err := middleware.NewIAPValidator(cfg)
+	if err != nil {
+		log.Fatalf("IAP validator: %v", err)
+	}
+	if iapValidator != nil {
+		log.Println("IAP JWT validation enabled; backend will reject requests without valid X-Goog-IAP-JWT-Assertion")
+	}
+
+	iapHandler := middleware.WrapWithIAP(iapValidator, mux, []string{"/health", "/ready"})
+
+	var rootHandler http.Handler = iapHandler
+	if len(cfg.CORS.AllowedOrigins) > 0 {
+		rootHandler = middleware.CORS(middleware.CORSConfig{
+			AllowedOrigins: cfg.CORS.AllowedOrigins,
+		})(iapHandler)
+	}
+
 	server := &http.Server{
 		Addr:    ":" + cfg.Server.Port,
-		Handler: mux,
+		Handler: rootHandler,
 	}
 
 	go func() {

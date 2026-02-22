@@ -1,139 +1,149 @@
-# GCP Proxy Mity - Terraform Infrastructure
+# Terraform: Private-by-default GCP + IAP
 
-This Terraform configuration sets up a secure, private Cloud Run application with AlloyDB Omni database and Cloud Identity-Aware Proxy (IAP) authentication.
+Infrastructure for **gcp-proxy-mity** (backend) and **uni-album** (frontend) with Identity-Aware Proxy. Only a single Google account can access the app; frontend and backend have no public ingress.
 
-## Architecture
+## Architecture (ASCII)
 
-- **Cloud Run**: Private service (no public access)
-- **AlloyDB Omni**: Managed PostgreSQL database in private VPC
-- **Application Load Balancer**: Public endpoint with HTTPS
-- **Cloud IAP**: Authentication layer (your Google account)
-- **Cloud Storage**: File storage bucket
-- **VPC**: Private networking with serverless connector
-
-## Prerequisites
-
-1. **GCP Project** with billing enabled
-2. **OAuth 2.0 Credentials** for IAP:
-   - Go to [Google Cloud Console > APIs & Credentials](https://console.cloud.google.com/apis/credentials)
-   - Create OAuth 2.0 Client ID (Web application)
-   - Add authorized redirect URIs: `https://iap.googleapis.com/v1/oauth/clientIds/{client-id}:handleRedirect`
-3. **Docker image** pushed to Google Container Registry
-4. **Domain name** (optional, but recommended)
-
-## Setup Instructions
-
-### 1. Build and Push Docker Image
-
-```bash
-# Build the image
-docker build -t gcr.io/YOUR-PROJECT-ID/gcp-proxy-mity:latest .
-
-# Push to GCR
-docker push gcr.io/YOUR-PROJECT-ID/gcp-proxy-mity:latest
+```
+                    Internet (HTTPS only)
+                            │
+                            ▼
+              ┌─────────────────────────────┐
+              │  External HTTPS Load Balancer │
+              │  (managed SSL, IAP enabled)   │
+              └──────────────┬───────────────┘
+                             │
+                    IAP (Google OAuth)
+                    only allowed user
+                             │
+                             ▼
+              ┌─────────────────────────────┐
+              │   Frontend (Cloud Run)       │
+              │   uni-album                  │
+              │   ingress: LB + internal     │
+              │   no *.run.app direct        │
+              └──────────────┬───────────────┘
+                             │
+                   /api/* → backend
+                   X-Goog-IAP-JWT-Assertion forwarded
+                             │
+              VPC (Serverless Connector)
+              PRIVATE_RANGES_ONLY
+                             │
+                             ▼
+              ┌─────────────────────────────┐
+              │   Backend (Cloud Run)        │
+              │   gcp-proxy-mity             │
+              │   ingress: INTERNAL only     │
+              │   invoker: frontend SA only  │
+              └──────────────┬───────────────┘
+                             │
+              VPC ALL_TRAFFIC (AlloyDB, GCS)
+                             │
+              ┌──────────────┼──────────────┐
+              ▼              ▼               ▼
+         AlloyDB          GCS Bucket    Secret Manager
 ```
 
-### 2. Configure Terraform Variables
+## How IAP works here
 
-```bash
-# Copy the example file
-cp terraform.tfvars.example terraform.tfvars
+1. **User** opens `https://<frontend_domain>` in a browser (desktop or mobile).
+2. **Load Balancer** terminates HTTPS and sends the request to **IAP**.
+3. **IAP** challenges the user with **Google OAuth**. Only the Google account that has `roles/iap.httpsResourceAccessor` on the backend service can pass.
+4. After login, IAP adds the header **`X-Goog-IAP-JWT-Assertion`** (a JWT signed by Google) and forwards the request to the **frontend** Cloud Run service.
+5. The **frontend** (nginx) serves the SPA and proxies `/api/*` to the **backend** Cloud Run URL, **forwarding** the same `X-Goog-IAP-JWT-Assertion` header.
+6. The **backend** validates the JWT (issuer, audience, email) and only accepts requests with an allowed email. No IAP header or wrong identity → 401.
 
-# Edit with your values
-vim terraform.tfvars
+So: **only your Google account** can reach the frontend (IAP), and **only the frontend** can call the backend (internal ingress + IAP JWT check).
+
+## How access is controlled
+
+| Layer            | Control |
+|------------------|--------|
+| Frontend URL     | IAP: only identities with `roles/iap.httpsResourceAccessor` on the LB backend service. We grant this to a **single user** (`allowed_iap_user_email`). |
+| Frontend Cloud Run | No `allUsers`. Only the load balancer identity (`service-*@gcp-sa-runapps.iam.gserviceaccount.com`) has `roles/run.invoker`. Ingress = `INTERNAL_LOAD_BALANCER` so direct `*.run.app` is not accepted. |
+| Backend Cloud Run  | No public ingress (`INTERNAL_ONLY`). Only the **frontend** service account has `roles/run.invoker`. Backend also validates the IAP JWT and allowed email. |
+
+## How to add/remove users
+
+- **Single user (current):** The variable `allowed_iap_user_email` is one email. To **change** the user, update the variable and run `terraform apply`. That updates both IAM (`iap.httpsResourceAccessor`) and the backend env `ALLOWED_IAP_EMAILS`.
+- **Add more users:** Grant `roles/iap.httpsResourceAccessor` to each new user (e.g. `google_iap_web_backend_service_iam_member` with `member = "user:another@example.com"`). Update `ALLOWED_IAP_EMAILS` in the backend Cloud Run env to include the new emails (e.g. comma-separated in Terraform).
+- **Remove a user:** Remove the IAM binding for that user and remove their email from `ALLOWED_IAP_EMAILS`.
+
+## How to rotate service accounts
+
+- **Frontend SA:** Create a new SA in Terraform, grant it `roles/run.invoker` on the **backend** Cloud Run (and remove the old SA from that binding). Update the frontend Cloud Run `template.service_account` to the new SA. Apply. Then you can delete the old SA if unused.
+- **Backend SA:** Create a new SA, grant it the same roles (GCS, AlloyDB, Secret Manager). Update the backend Cloud Run `template.service_account` and the backend’s IAM. Apply. Rotate any keys/secrets the old SA had; then delete the old SA if unused.
+- **No hardcoded secrets:** All secrets (e.g. DB password) are in Secret Manager; SAs are used for identity only.
+
+## Terraform folder structure
+
+```
+terraform/
+├── backend.tf      # GCS state backend
+├── main.tf         # APIs, VPC, connector, backend CR, frontend CR, LB, IAP, IAM
+├── variables.tf    # project_id, region, images, allowed_iap_user_email, frontend_domain
+├── outputs.tf      # iap_protected_url, load_balancer_ip, SAs, verification_commands
+└── README.md       # This file
 ```
 
-Required values:
-- `project_id`: Your GCP project ID
-- `oauth_client_id`: OAuth client ID from step 2
-- `oauth_client_secret`: OAuth client secret from step 2
-- `allowed_users`: List of email addresses (your accounts)
+## Required variables
 
-### 3. Deploy Infrastructure
+| Variable | Description |
+|----------|-------------|
+| `project_id` | GCP project ID |
+| `region` | e.g. `europe-west4` |
+| `allowed_iap_user_email` | Single Google account allowed (e.g. `you@gmail.com`) |
+| `frontend_domain` | Domain for the app (e.g. `album.example.com`). You must create a **DNS A record** pointing to the LB IP after apply. |
+| `backend_container_image` | (Optional) Backend image. Empty = use default from Artifact Registry. |
+| `frontend_container_image` | (Optional) Frontend image. Empty = use default. |
+| `iap_audience` | (Optional) IAP JWT audience so the backend can validate JWTs. **After first apply**, run `terraform output -raw backend_service_audience` and set this variable, then apply again. If empty, the backend does not validate IAP (fine for first apply; set for production). |
 
-```bash
-# Initialize Terraform
-terraform init
+## Apply
 
-# Review the plan
-terraform plan
+1. Create a GCS bucket for Terraform state (if not already) and configure `backend.tf`.
+2. Create `terraform.tfvars` (or pass `-var`) with `project_id`, `allowed_iap_user_email`, `frontend_domain`.
+3. Run:
+   ```bash
+   terraform init
+   terraform plan
+   terraform apply
+   ```
+4. After apply, create a **DNS A record**: `frontend_domain` → `load_balancer_ip` (from `terraform output load_balancer_ip`). Wait for the managed SSL certificate to become ACTIVE (can take several minutes).
 
-# Deploy
-terraform apply
-```
+## Validation steps
 
-### 4. Configure DNS (if using custom domain)
+1. **Frontend is inaccessible without Google login**  
+   Open `https://<frontend_domain>` in an incognito window. You should get an IAP / Google sign-in page. Without the allowed account, access is denied.
 
-After deployment, point your domain to the load balancer IP:
+2. **Backend cannot be called directly**  
+   The backend Cloud Run URL is internal-only. From your laptop, `curl -sI <backend_run_url>/health` should return **403** (or be unreachable).
 
-```bash
-# Get the IP address
-terraform output load_balancer_ip
-```
+3. **Only the allowed Google account works**  
+   Sign in with `allowed_iap_user_email` and open `https://<frontend_domain>`. The app should load. Sign in with a different Google account; access should be denied by IAP.
 
-Create an A record: `api.yourdomain.com -> LOAD_BALANCER_IP`
+4. **Mobile browser (iPhone/iPad)**  
+   Open `https://<frontend_domain>` in Safari (or another browser). Sign in with the allowed account; the app should work without VPN.
 
-### 5. Access Your Application
+## Verification commands (from Terraform output)
 
-Once deployed, access your application at:
-- Custom domain: `https://api.yourdomain.com`
-- Load balancer IP: `https://LOAD_BALANCER_IP` (will show certificate warning)
-
-You'll be prompted to authenticate with your Google account.
-
-## Security Features
-
-✅ **Private Cloud Run** - No direct public access  
-✅ **Private Database** - AlloyDB in VPC, not internet accessible  
-✅ **IAP Authentication** - Google account required  
-✅ **HTTPS Only** - Managed SSL certificates  
-✅ **VPC Isolation** - All services in private network  
-✅ **Least Privilege IAM** - Minimal service account permissions  
-
-## Mobile Access
-
-On your iPhone/iPad:
-1. Open Safari or any browser
-2. Navigate to your application URL
-3. Authenticate with your Google account
-4. Save to home screen for app-like experience
-
-## Cost Optimization
-
-- **Cloud Run**: Scales to zero, pay per request
-- **AlloyDB Omni**: Serverless, scales with usage
-- **Load Balancer**: Pay per GB of traffic
-- **Storage**: Pay per GB stored
-
-## Monitoring
-
-Access logs and metrics in Google Cloud Console:
-- **Cloud Run**: Monitor requests, latency, errors
-- **AlloyDB**: Database performance metrics
-- **Load Balancer**: Traffic and uptime monitoring
-
-## Troubleshooting
-
-### Common Issues
-
-1. **OAuth Error**: Ensure redirect URIs are correctly configured
-2. **Database Connection**: Check VPC connector and AlloyDB networking
-3. **403 Forbidden**: Verify your email is in `allowed_users` list
-4. **SSL Certificate**: May take 15-60 minutes to provision
-
-### Check Service Health
+Run:
 
 ```bash
-# Test the health endpoint (after IAP authentication)
-curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-  https://your-domain.com/health
+terraform output -raw verification_commands
 ```
 
-## Clean Up
+Then run the printed commands to double-check:
 
-```bash
-# Destroy all resources
-terraform destroy
-```
+- `curl -sI https://<frontend_domain>` (expect 302/401 or IAP challenge, not 200 without auth).
+- Backend URL should not be reachable from the internet.
+- Use the allowed account in a browser to confirm access.
 
-**Warning**: This will delete all data including the database and storage bucket.
+## Security rules enforced
+
+- No `allUsers` or `allAuthenticatedUsers` on Cloud Run or IAP.
+- No public Cloud Run ingress for the frontend (only LB + internal).
+- No public backend; backend is internal-only and validates IAP JWT.
+- No hardcoded secrets; use Secret Manager and IAM.
+- HTTPS everywhere (managed cert on the LB).
+- Explicit IAM only (single IAP user, frontend SA invokes backend, LB identity invokes frontend).

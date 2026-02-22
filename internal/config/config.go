@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -14,6 +15,20 @@ type Config struct {
 	Server   ServerConfig
 	Database DatabaseConfig
 	Storage  StorageConfig
+	IAP      IAPConfig
+	CORS     CORSConfig
+}
+
+// CORSConfig holds Cross-Origin Resource Sharing settings.
+type CORSConfig struct {
+	AllowedOrigins []string
+}
+
+// IAPConfig holds Identity-Aware Proxy JWT validation settings.
+// When IAPAudience is set, the backend requires X-Goog-IAP-JWT-Assertion and validates it.
+type IAPConfig struct {
+	Audience       string   // Expected JWT audience, e.g. /projects/PROJECT_NUMBER/global/backendServices/BACKEND_SERVICE_ID
+	AllowedEmails  []string // Allowed Google account emails (at least one must match JWT email claim)
 }
 
 // ServerConfig holds server-related configuration
@@ -74,6 +89,13 @@ func Load() *Config {
 			GCPProjectID:      getEnv("GCP_PROJECT_ID", ""),
 			GCSBucketName:     getEnv("GCS_BUCKET_NAME", ""),
 			GoogleCredentials: getEnv("GOOGLE_APPLICATION_CREDENTIALS", ""),
+		},
+		IAP: IAPConfig{
+			Audience:      getEnv("IAP_AUDIENCE", ""),
+			AllowedEmails: getEnvAsSlice("ALLOWED_IAP_EMAILS", ","),
+		},
+		CORS: CORSConfig{
+			AllowedOrigins: getEnvAsSlice("CORS_ALLOWED_ORIGINS", ","),
 		},
 	}
 }
@@ -139,11 +161,31 @@ func getEnvAsDuration(key string, defaultValue string) time.Duration {
 			return parsed
 		}
 	}
-	
 	// Parse default value
 	if parsed, err := time.ParseDuration(defaultValue); err == nil {
 		return parsed
 	}
-	
 	return 0
+}
+
+func getEnvAsSlice(key, sep string) []string {
+	value := os.Getenv(key)
+	if value == "" {
+		return nil
+	}
+	var out []string
+	for _, s := range splitAndTrim(value, sep) {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func splitAndTrim(s, sep string) []string {
+	var out []string
+	for _, part := range strings.Split(s, sep) {
+		out = append(out, strings.TrimSpace(part))
+	}
+	return out
 }
