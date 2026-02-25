@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
-# GCP Proxy Mity + Uni Album – Private-by-default with IAP
-# VPC, Backend (internal only), Frontend (LB + IAP only), HTTPS, single-user access
+# GCP Proxy Mity – Backend infrastructure
+# Cloud Run + Cloud SQL + Private Networking
 # ---------------------------------------------------------------------------
 
 terraform {
@@ -32,14 +32,6 @@ provider "google-beta" {
 }
 
 # ---------------------------------------------------------------------------
-# Data
-# ---------------------------------------------------------------------------
-
-data "google_project" "project" {
-  project_id = var.project_id
-}
-
-# ---------------------------------------------------------------------------
 # APIs
 # ---------------------------------------------------------------------------
 
@@ -47,8 +39,6 @@ resource "google_project_service" "apis" {
   for_each = toset([
     "compute.googleapis.com",
     "run.googleapis.com",
-    "iap.googleapis.com",
-    "cloudresourcemanager.googleapis.com",
     "vpcaccess.googleapis.com",
     "sqladmin.googleapis.com",
     "storage.googleapis.com",
@@ -104,7 +94,7 @@ resource "google_vpc_access_connector" "connector" {
 }
 
 # ---------------------------------------------------------------------------
-# Cloud SQL PostgreSQL (backend DB)
+# Cloud SQL PostgreSQL
 # ---------------------------------------------------------------------------
 
 resource "random_password" "db_password" {
@@ -187,58 +177,57 @@ resource "google_storage_bucket" "storage" {
 }
 
 # ---------------------------------------------------------------------------
-# Service accounts – least privilege
+# Service account and IAM
 # ---------------------------------------------------------------------------
 
-resource "google_service_account" "backend_sa" {
-  account_id   = "gcp-proxy-mity-backend"
-  display_name = "Backend Cloud Run Service Account"
+resource "google_service_account" "app_sa" {
+  account_id   = "gcp-proxy-mity-app"
+  display_name = "GCP Proxy Mity App Service Account"
   depends_on   = [google_project_service.apis]
 }
 
-resource "google_service_account" "frontend_sa" {
-  account_id   = "uni-album-frontend"
-  display_name = "Frontend Cloud Run Service Account"
-  depends_on   = [google_project_service.apis]
-}
-
-resource "google_storage_bucket_iam_member" "backend_storage" {
+resource "google_storage_bucket_iam_member" "storage_admin" {
   bucket = google_storage_bucket.storage.name
   role   = "roles/storage.objectAdmin"
-  member = "serviceAccount:${google_service_account.backend_sa.email}"
+  member = "serviceAccount:${google_service_account.app_sa.email}"
 }
 
-resource "google_project_iam_member" "backend_cloudsql_client" {
+resource "google_project_iam_member" "cloudsql_client" {
   project = var.project_id
   role    = "roles/cloudsql.client"
-  member  = "serviceAccount:${google_service_account.backend_sa.email}"
+  member  = "serviceAccount:${google_service_account.app_sa.email}"
 }
 
-resource "google_secret_manager_secret_iam_member" "backend_secret_access" {
+resource "google_secret_manager_secret_iam_member" "app_sa_secret_access" {
   secret_id = google_secret_manager_secret.db_password.secret_id
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.backend_sa.email}"
+  member    = "serviceAccount:${google_service_account.app_sa.email}"
 }
 
 # ---------------------------------------------------------------------------
-# Backend Cloud Run – internal ingress only, no public URL
+# Cloud Run – Backend
 # ---------------------------------------------------------------------------
 
-resource "google_cloud_run_v2_service" "backend" {
+resource "google_cloud_run_v2_service" "app" {
   provider = google-beta
   name     = "gcp-proxy-mity"
   location = var.region
-  ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY"
 
   template {
-    service_account = google_service_account.backend_sa.email
+    service_account = google_service_account.app_sa.email
+
     vpc_access {
       connector = google_vpc_access_connector.connector.id
       egress    = "ALL_TRAFFIC"
     }
+
     containers {
-      image = var.backend_container_image != "" ? var.backend_container_image : "${var.region}-docker.pkg.dev/${var.project_id}/gcp-proxy-mity/gcp-proxy-mity:latest"
-      ports { container_port = 8080 }
+      image = var.container_image != "" ? var.container_image : "${var.region}-docker.pkg.dev/${var.project_id}/gcp-proxy-mity/gcp-proxy-mity:latest"
+
+      ports {
+        container_port = 8080
+      }
+
       env {
         name  = "GCP_PROJECT_ID"
         value = var.project_id
@@ -290,14 +279,16 @@ resource "google_cloud_run_v2_service" "backend" {
       }
       env {
         name  = "CORS_ALLOWED_ORIGINS"
-        value = "https://${var.frontend_domain}"
+        value = var.cors_allowed_origins
       }
+
       resources {
         limits = {
           cpu    = "1"
           memory = "1Gi"
         }
       }
+
       startup_probe {
         http_get {
           path = "/health"
@@ -309,11 +300,13 @@ resource "google_cloud_run_v2_service" "backend" {
         timeout_seconds       = 3
       }
     }
+
     scaling {
       min_instance_count = 0
       max_instance_count = 10
     }
   }
+
   depends_on = [
     google_project_service.apis,
     google_vpc_access_connector.connector,
@@ -321,173 +314,12 @@ resource "google_cloud_run_v2_service" "backend" {
   ]
 }
 
-# Backend: only frontend SA may invoke (no allUsers, no allAuthenticatedUsers)
-resource "google_cloud_run_v2_service_iam_binding" "backend_invoker" {
+resource "google_cloud_run_v2_service_iam_member" "public" {
   project  = var.project_id
   location = var.region
-  name     = google_cloud_run_v2_service.backend.name
+  name     = google_cloud_run_v2_service.app.name
   role     = "roles/run.invoker"
-  members  = ["serviceAccount:${google_service_account.frontend_sa.email}"]
+  member   = "allUsers"
 }
 
-# ---------------------------------------------------------------------------
-# Artifact Registry for frontend (optional; can use existing repo)
-# ---------------------------------------------------------------------------
 
-resource "google_artifact_registry_repository" "frontend" {
-  location      = var.region
-  repository_id = "uni-album"
-  format        = "DOCKER"
-  depends_on    = [google_project_service.apis]
-}
-
-# ---------------------------------------------------------------------------
-# Frontend Cloud Run – traffic only via Load Balancer + IAP (no direct *.run.app)
-# ---------------------------------------------------------------------------
-
-resource "google_cloud_run_v2_service" "frontend" {
-  provider = google-beta
-  name     = "uni-album"
-  location = var.region
-  ingress  = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
-
-  template {
-    service_account = google_service_account.frontend_sa.email
-    vpc_access {
-      connector = google_vpc_access_connector.connector.id
-      egress    = "PRIVATE_RANGES_ONLY"
-    }
-    containers {
-      image = var.frontend_container_image != "" ? var.frontend_container_image : "${var.region}-docker.pkg.dev/${var.project_id}/uni-album/uni-album:latest"
-      ports { container_port = 8080 }
-      env {
-        name  = "BACKEND_URL"
-        value = google_cloud_run_v2_service.backend.uri
-      }
-      resources {
-        limits = {
-          cpu    = "1"
-          memory = "256Mi"
-        }
-      }
-      startup_probe {
-        http_get {
-          path = "/healthz"
-          port = 8080
-        }
-        initial_delay_seconds = 2
-        period_seconds        = 3
-        failure_threshold     = 10
-        timeout_seconds       = 2
-      }
-    }
-    scaling {
-      min_instance_count = 0
-      max_instance_count = 5
-    }
-  }
-  depends_on = [
-    google_project_service.apis,
-    google_artifact_registry_repository.frontend,
-    google_vpc_access_connector.connector,
-  ]
-}
-
-# Frontend: only internal + Cloud Load Balancing (no direct public *.run.app)
-# We do NOT grant allUsers; only the load balancer identity may invoke.
-resource "google_cloud_run_v2_service_iam_member" "frontend_lb_invoker" {
-  project  = var.project_id
-  location = var.region
-  name     = google_cloud_run_v2_service.frontend.name
-  role     = "roles/run.invoker"
-  member   = "serviceAccount:service-${data.google_project.project.number}@gcp-sa-runapps.iam.gserviceaccount.com"
-}
-
-# ---------------------------------------------------------------------------
-# HTTPS Load Balancer + IAP
-# ---------------------------------------------------------------------------
-
-# Reserve global static IP for the LB
-resource "google_compute_global_address" "lb_ip" {
-  name = "uni-album-lb-ip"
-}
-
-# Managed SSL certificate (provisioning can take up to ~15 min; create DNS A record to this IP)
-resource "google_compute_managed_ssl_certificate" "frontend_cert" {
-  name = "uni-album-frontend-cert"
-  managed {
-    domains = [var.frontend_domain]
-  }
-}
-
-# Serverless NEG for frontend Cloud Run
-resource "google_compute_region_network_endpoint_group" "frontend_neg" {
-  name                  = "uni-album-frontend-neg"
-  network_endpoint_type = "SERVERLESS"
-  region                = var.region
-  cloud_run {
-    service = google_cloud_run_v2_service.frontend.name
-  }
-}
-
-# Backend service for the LB (frontend Cloud Run)
-resource "google_compute_backend_service" "frontend" {
-  name                  = "uni-album-frontend-backend"
-  protocol              = "HTTP"
-  port_name             = "http"
-  load_balancing_scheme = "EXTERNAL_MANAGED"
-  backend {
-    group = google_compute_region_network_endpoint_group.frontend_neg.id
-  }
-  iap {
-    oauth2_client_id     = google_iap_client.iap_client.client_id
-    oauth2_client_secret = google_iap_client.iap_client.secret
-  }
-}
-
-# IAP OAuth brand (project-level; create once per project)
-resource "google_iap_brand" "project_brand" {
-  project           = var.project_id
-  support_email     = var.allowed_iap_user_email
-  application_title = "Uni Album"
-}
-
-# IAP OAuth client for the backend service
-resource "google_iap_client" "iap_client" {
-  display_name = "Uni Album IAP Client"
-  brand        = google_iap_brand.project_brand.name
-}
-
-# URL map: all traffic to frontend backend service
-resource "google_compute_url_map" "frontend" {
-  name            = "uni-album-url-map"
-  default_service = google_compute_backend_service.frontend.id
-}
-
-# HTTPS proxy
-resource "google_compute_target_https_proxy" "frontend" {
-  name             = "uni-album-https-proxy"
-  url_map          = google_compute_url_map.frontend.id
-  ssl_certificates = [google_compute_managed_ssl_certificate.frontend_cert.id]
-}
-
-# Global forwarding rule (HTTPS)
-resource "google_compute_global_forwarding_rule" "frontend_https" {
-  name                  = "uni-album-https-forwarding-rule"
-  ip_protocol           = "TCP"
-  port_range            = "443"
-  target                = google_compute_target_https_proxy.frontend.id
-  load_balancing_scheme = "EXTERNAL_MANAGED"
-  ip_address            = google_compute_global_address.lb_ip.id
-}
-
-# ---------------------------------------------------------------------------
-# IAP access – only the single allowed Google account (no allUsers)
-# ---------------------------------------------------------------------------
-
-resource "google_iap_web_backend_service_iam_member" "iap_user" {
-  project             = var.project_id
-  web_backend_service = google_compute_backend_service.frontend.name
-  role                = "roles/iap.httpsResourceAccessor"
-  member              = "user:${var.allowed_iap_user_email}"
-}
