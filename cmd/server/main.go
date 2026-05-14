@@ -76,17 +76,21 @@ func main() {
 	}()
 
 	// Initialize dependencies after the server is listening
-	dbPool, err := initializeDatabaseWithRetry(ctx, cfg.Database)
-	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
-	}
-	defer dbPool.Close()
+	if cfg.Database.Enabled {
+		dbPool, err := initializeDatabaseWithRetry(ctx, cfg.Database)
+		if err != nil {
+			log.Fatalf("Failed to initialize database: %v", err)
+		}
+		defer dbPool.Close()
 
-	if err := database.RunMigrations(ctx, dbPool, database.MigrationsSQL); err != nil {
-		log.Fatalf("Failed to run database migrations: %v", err)
-	}
+		if err := database.RunMigrations(ctx, dbPool, database.MigrationsSQL); err != nil {
+			log.Fatalf("Failed to run database migrations: %v", err)
+		}
 
-	_ = database.NewPostgresService(dbPool)
+		_ = database.NewPostgresService(dbPool)
+	} else {
+		log.Println("Database disabled; skipping database initialization")
+	}
 
 	store, err := storage.NewGCSStore(ctx, cfg.Storage.GCSBucketName, cfg.Storage.GoogleCredentials)
 	if err != nil {

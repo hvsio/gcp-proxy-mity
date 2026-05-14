@@ -8,8 +8,7 @@ output "bucket_name" {
   value       = google_storage_bucket.storage.name
 }
 
-output "cloudsql_ip" {
-  description = "Private IP of the Cloud SQL instance"
-  value       = google_sql_database_instance.postgres.private_ip_address
-  sensitive   = true
+output "cloudsql_connection_name" {
+  description = "Cloud SQL instance connection name"
+  value       = var.enable_database ? google_sql_database_instance.postgres[0].connection_name : null
 }

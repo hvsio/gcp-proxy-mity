@@ -1,6 +1,6 @@
 # ---------------------------------------------------------------------------
-# GCP Proxy Mity – Backend infrastructure
-# Cloud Run + Cloud SQL + Private Networking
+# GCP Proxy Mity - Backend infrastructure
+# Cloud Run + GCS, with optional Cloud SQL
 # ---------------------------------------------------------------------------
 
 terraform {
@@ -21,6 +21,29 @@ terraform {
   }
 }
 
+locals {
+  base_project_services = [
+    "run.googleapis.com",
+    "storage.googleapis.com",
+    "artifactregistry.googleapis.com",
+  ]
+
+  database_project_services = var.enable_database ? [
+    "sqladmin.googleapis.com",
+    "secretmanager.googleapis.com",
+  ] : []
+
+  vpc_project_services = var.vpc_connector_id != "" ? [
+    "vpcaccess.googleapis.com",
+  ] : []
+
+  project_services = toset(concat(
+    local.base_project_services,
+    local.database_project_services,
+    local.vpc_project_services,
+  ))
+}
+
 provider "google" {
   project = var.project_id
   region  = var.region
@@ -36,61 +59,10 @@ provider "google-beta" {
 # ---------------------------------------------------------------------------
 
 resource "google_project_service" "apis" {
-  for_each = toset([
-    "compute.googleapis.com",
-    "run.googleapis.com",
-    "vpcaccess.googleapis.com",
-    "sqladmin.googleapis.com",
-    "storage.googleapis.com",
-    "servicenetworking.googleapis.com",
-    "secretmanager.googleapis.com",
-    "artifactregistry.googleapis.com",
-  ])
+  for_each = local.project_services
   project            = var.project_id
   service            = each.value
   disable_on_destroy = false
-}
-
-# ---------------------------------------------------------------------------
-# VPC and networking
-# ---------------------------------------------------------------------------
-
-resource "google_compute_network" "vpc" {
-  name                    = "gcp-proxy-mity-vpc"
-  auto_create_subnetworks = false
-  depends_on              = [google_project_service.apis]
-}
-
-resource "google_compute_subnetwork" "subnet" {
-  name                     = "gcp-proxy-mity-subnet"
-  ip_cidr_range            = "10.1.0.0/24"
-  region                   = var.region
-  network                  = google_compute_network.vpc.id
-  private_ip_google_access = true
-}
-
-resource "google_compute_global_address" "private_ip_range" {
-  name          = "gcp-proxy-mity-private-ip"
-  purpose       = "VPC_PEERING"
-  address_type  = "INTERNAL"
-  prefix_length = 16
-  network       = google_compute_network.vpc.id
-}
-
-resource "google_service_networking_connection" "private_vpc_connection" {
-  network                 = google_compute_network.vpc.id
-  service                 = "servicenetworking.googleapis.com"
-  reserved_peering_ranges = [google_compute_global_address.private_ip_range.name]
-  depends_on              = [google_project_service.apis]
-}
-
-resource "google_vpc_access_connector" "connector" {
-  provider      = google-beta
-  name          = "gcp-proxy-mity-connector"
-  region        = var.region
-  network       = google_compute_network.vpc.name
-  ip_cidr_range = "10.2.0.0/28"
-  depends_on    = [google_project_service.apis, google_compute_subnetwork.subnet]
 }
 
 # ---------------------------------------------------------------------------
@@ -98,12 +70,14 @@ resource "google_vpc_access_connector" "connector" {
 # ---------------------------------------------------------------------------
 
 resource "random_password" "db_password" {
+  count   = var.enable_database ? 1 : 0
   length  = 32
   special = false
 }
 
 resource "google_secret_manager_secret" "db_password" {
-  secret_id = "cloudsql-password"
+  count     = var.enable_database ? 1 : 0
+  secret_id = "gcp-proxy-mity-cloudsql-password"
   replication {
     auto {}
   }
@@ -111,11 +85,13 @@ resource "google_secret_manager_secret" "db_password" {
 }
 
 resource "google_secret_manager_secret_version" "db_password" {
-  secret      = google_secret_manager_secret.db_password.id
-  secret_data = random_password.db_password.result
+  count       = var.enable_database ? 1 : 0
+  secret      = google_secret_manager_secret.db_password[0].id
+  secret_data = random_password.db_password[0].result
 }
 
 resource "google_sql_database_instance" "postgres" {
+  count               = var.enable_database ? 1 : 0
   name                = "gcp-proxy-mity-db"
   database_version    = "POSTGRES_15"
   region              = var.region
@@ -126,12 +102,6 @@ resource "google_sql_database_instance" "postgres" {
     availability_type = "ZONAL"
     disk_size         = 10
     disk_type         = "PD_SSD"
-
-    ip_configuration {
-      ipv4_enabled                                  = false
-      private_network                               = google_compute_network.vpc.id
-      enable_private_path_for_google_cloud_services = true
-    }
 
     backup_configuration {
       enabled                        = true
@@ -145,19 +115,20 @@ resource "google_sql_database_instance" "postgres" {
 
   depends_on = [
     google_project_service.apis,
-    google_service_networking_connection.private_vpc_connection,
   ]
 }
 
 resource "google_sql_database" "app" {
-  name     = "postgres"
-  instance = google_sql_database_instance.postgres.name
+  count    = var.enable_database ? 1 : 0
+  name     = "gcp_proxy"
+  instance = google_sql_database_instance.postgres[0].name
 }
 
-resource "google_sql_user" "postgres" {
-  name     = "postgres"
-  instance = google_sql_database_instance.postgres.name
-  password = random_password.db_password.result
+resource "google_sql_user" "app" {
+  count    = var.enable_database ? 1 : 0
+  name     = "gcp_proxy_app"
+  instance = google_sql_database_instance.postgres[0].name
+  password = random_password.db_password[0].result
 }
 
 # ---------------------------------------------------------------------------
@@ -168,11 +139,24 @@ resource "google_storage_bucket" "storage" {
   name                        = "${var.project_id}-gcp-proxy-mity-storage"
   location                    = var.region
   uniform_bucket_level_access = true
-  versioning { enabled = false }
-  lifecycle_rule {
-    condition { age = 90 }
-    action { type = "Delete" }
+
+  versioning {
+    enabled = true
   }
+
+  dynamic "lifecycle_rule" {
+    for_each = var.bucket_lifecycle_delete_age_days == null ? [] : [var.bucket_lifecycle_delete_age_days]
+
+    content {
+      condition {
+        age = lifecycle_rule.value
+      }
+      action {
+        type = "Delete"
+      }
+    }
+  }
+
   depends_on = [google_project_service.apis]
 }
 
@@ -186,20 +170,22 @@ resource "google_service_account" "app_sa" {
   depends_on   = [google_project_service.apis]
 }
 
-resource "google_storage_bucket_iam_member" "storage_admin" {
+resource "google_storage_bucket_iam_member" "storage_viewer" {
   bucket = google_storage_bucket.storage.name
-  role   = "roles/storage.objectAdmin"
+  role   = "roles/storage.objectViewer"
   member = "serviceAccount:${google_service_account.app_sa.email}"
 }
 
 resource "google_project_iam_member" "cloudsql_client" {
+  count   = var.enable_database ? 1 : 0
   project = var.project_id
   role    = "roles/cloudsql.client"
   member  = "serviceAccount:${google_service_account.app_sa.email}"
 }
 
 resource "google_secret_manager_secret_iam_member" "app_sa_secret_access" {
-  secret_id = google_secret_manager_secret.db_password.secret_id
+  count     = var.enable_database ? 1 : 0
+  secret_id = google_secret_manager_secret.db_password[0].secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.app_sa.email}"
 }
@@ -216,13 +202,17 @@ resource "google_cloud_run_v2_service" "app" {
   template {
     service_account = google_service_account.app_sa.email
 
-    vpc_access {
-      connector = google_vpc_access_connector.connector.id
-      egress    = "ALL_TRAFFIC"
+    dynamic "vpc_access" {
+      for_each = var.vpc_connector_id == "" ? [] : [var.vpc_connector_id]
+
+      content {
+        connector = vpc_access.value
+        egress    = "PRIVATE_RANGES_ONLY"
+      }
     }
 
     containers {
-      image = var.container_image != "" ? var.container_image : "${var.region}-docker.pkg.dev/${var.project_id}/gcp-proxy-mity/gcp-proxy-mity:latest"
+      image = var.container_image
 
       ports {
         container_port = 8080
@@ -237,35 +227,56 @@ resource "google_cloud_run_v2_service" "app" {
         value = google_storage_bucket.storage.name
       }
       env {
-        name  = "DB_TYPE"
-        value = "postgres"
+        name  = "ENABLE_DATABASE"
+        value = tostring(var.enable_database)
       }
-      env {
-        name  = "DB_HOST"
-        value = google_sql_database_instance.postgres.private_ip_address
+
+      dynamic "env" {
+        for_each = var.enable_database ? [1] : []
+
+        content {
+          name  = "DB_TYPE"
+          value = "cloudsql"
+        }
       }
-      env {
-        name  = "DB_PORT"
-        value = "5432"
+
+      dynamic "env" {
+        for_each = var.enable_database ? [1] : []
+
+        content {
+          name  = "DB_INSTANCE_CONNECTION_NAME"
+          value = google_sql_database_instance.postgres[0].connection_name
+        }
       }
-      env {
-        name  = "DB_DATABASE_NAME"
-        value = "postgres"
+
+      dynamic "env" {
+        for_each = var.enable_database ? [1] : []
+
+        content {
+          name  = "DB_DATABASE_NAME"
+          value = google_sql_database.app[0].name
+        }
       }
-      env {
-        name  = "DB_USERNAME"
-        value = "postgres"
+
+      dynamic "env" {
+        for_each = var.enable_database ? [1] : []
+
+        content {
+          name  = "DB_USERNAME"
+          value = google_sql_user.app[0].name
+        }
       }
-      env {
-        name  = "DB_SSL_MODE"
-        value = "require"
-      }
-      env {
-        name = "DB_PASSWORD"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.db_password.secret_id
-            version = "latest"
+
+      dynamic "env" {
+        for_each = var.enable_database ? [1] : []
+
+        content {
+          name = "DB_PASSWORD"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.db_password[0].secret_id
+              version = "latest"
+            }
           }
         }
       }
@@ -275,11 +286,11 @@ resource "google_cloud_run_v2_service" "app" {
       }
       env {
         name  = "ALLOWED_IAP_EMAILS"
-        value = var.allowed_iap_user_email
+        value = join(",", var.allowed_iap_user_emails)
       }
       env {
         name  = "CORS_ALLOWED_ORIGINS"
-        value = var.cors_allowed_origins
+        value = join(",", var.cors_allowed_origins)
       }
 
       resources {
@@ -309,17 +320,14 @@ resource "google_cloud_run_v2_service" "app" {
 
   depends_on = [
     google_project_service.apis,
-    google_vpc_access_connector.connector,
-    google_sql_database_instance.postgres,
   ]
 }
 
 resource "google_cloud_run_v2_service_iam_member" "public" {
+  count    = var.allow_public_invoker ? 1 : 0
   project  = var.project_id
   location = var.region
   name     = google_cloud_run_v2_service.app.name
   role     = "roles/run.invoker"
   member   = "allUsers"
 }
-
-

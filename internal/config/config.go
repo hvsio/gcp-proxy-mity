@@ -27,8 +27,8 @@ type CORSConfig struct {
 // IAPConfig holds Identity-Aware Proxy JWT validation settings.
 // When IAPAudience is set, the backend requires X-Goog-IAP-JWT-Assertion and validates it.
 type IAPConfig struct {
-	Audience       string   // Expected JWT audience, e.g. /projects/PROJECT_NUMBER/global/backendServices/BACKEND_SERVICE_ID
-	AllowedEmails  []string // Allowed Google account emails (at least one must match JWT email claim)
+	Audience      string   // Expected JWT audience, e.g. /projects/PROJECT_NUMBER/global/backendServices/BACKEND_SERVICE_ID
+	AllowedEmails []string // Allowed Google account emails (at least one must match JWT email claim)
 }
 
 // ServerConfig holds server-related configuration
@@ -38,6 +38,7 @@ type ServerConfig struct {
 
 // DatabaseConfig holds database-related configuration
 type DatabaseConfig struct {
+	Enabled                bool
 	Type                   string // "cloudsql" or "postgres"
 	InstanceConnectionName string // For Cloud SQL: projects/PROJECT_ID/regions/REGION/instances/INSTANCE_ID
 	DatabaseName           string
@@ -47,9 +48,9 @@ type DatabaseConfig struct {
 	Port                   int    // For standard PostgreSQL
 	SSLMode                string // For standard PostgreSQL
 	MaxConnections         int32
-	MaxIdleTime           time.Duration
-	MaxLifetime           time.Duration
-	DSN                   string // Direct DSN override
+	MaxIdleTime            time.Duration
+	MaxLifetime            time.Duration
+	DSN                    string // Direct DSN override
 }
 
 // StorageConfig holds storage-related configuration
@@ -72,6 +73,7 @@ func Load() *Config {
 			Port: getEnv("PORT", "8080"),
 		},
 		Database: DatabaseConfig{
+			Enabled:                getEnvAsBool("ENABLE_DATABASE", false),
 			Type:                   getEnv("DB_TYPE", "postgres"),
 			InstanceConnectionName: getEnv("DB_INSTANCE_CONNECTION_NAME", ""),
 			DatabaseName:           getEnv("DB_DATABASE_NAME", "gcp_proxy"),
@@ -81,9 +83,9 @@ func Load() *Config {
 			Port:                   getEnvAsInt("DB_PORT", 5432),
 			SSLMode:                getEnv("DB_SSL_MODE", "disable"),
 			MaxConnections:         getEnvAsInt32("DB_MAX_CONNECTIONS", 10),
-			MaxIdleTime:           getEnvAsDuration("DB_MAX_IDLE_TIME", "30m"),
-			MaxLifetime:           getEnvAsDuration("DB_MAX_LIFETIME", "1h"),
-			DSN:                   getEnv("DATABASE_URL", ""), // Override with direct DSN
+			MaxIdleTime:            getEnvAsDuration("DB_MAX_IDLE_TIME", "30m"),
+			MaxLifetime:            getEnvAsDuration("DB_MAX_LIFETIME", "1h"),
+			DSN:                    getEnv("DATABASE_URL", ""), // Override with direct DSN
 		},
 		Storage: StorageConfig{
 			GCPProjectID:      getEnv("GCP_PROJECT_ID", ""),
@@ -108,7 +110,11 @@ func (c *Config) Validate() error {
 	if c.Storage.GCSBucketName == "" {
 		return ErrMissingBucketName
 	}
-	
+
+	if !c.Database.Enabled {
+		return nil
+	}
+
 	// Database validation
 	if c.Database.Type == "cloudsql" {
 		if c.Database.InstanceConnectionName == "" {
@@ -119,14 +125,14 @@ func (c *Config) Validate() error {
 			return ErrMissingDBHost
 		}
 	}
-	
+
 	if c.Database.DatabaseName == "" {
 		return ErrMissingDatabaseName
 	}
 	if c.Database.Username == "" {
 		return ErrMissingDBUsername
 	}
-	
+
 	return nil
 }
 
@@ -140,6 +146,15 @@ func getEnv(key, defaultValue string) string {
 func getEnvAsInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if parsed, err := strconv.Atoi(value); err == nil {
+			return parsed
+		}
+	}
+	return defaultValue
+}
+
+func getEnvAsBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
 			return parsed
 		}
 	}

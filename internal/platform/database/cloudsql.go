@@ -35,7 +35,7 @@ func NewCloudSQLPool(ctx context.Context, config CloudSQLConfig) (*pgxpool.Pool,
 	}
 
 	// Build the connection string
-	dsn := fmt.Sprintf("user=%s password=%s database=%s sslmode=disable",
+	dsn := fmt.Sprintf("user=%s password=%s dbname=%s sslmode=disable",
 		config.Username, config.Password, config.DatabaseName)
 
 	// Parse the connection string and configure the pool

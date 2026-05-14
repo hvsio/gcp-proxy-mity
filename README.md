@@ -9,7 +9,7 @@ A Go Cloud Run service that exposes a small read-only HTTP proxy for files store
 - Read multiple files with `POST /api/v1/storage/files/read`.
 - Optional IAP JWT validation for protected deployments.
 - Optional CORS allowlist.
-- Cloud SQL/Postgres wiring and migrations kept for future metadata features.
+- Optional Cloud SQL/Postgres wiring and migrations for metadata features.
 
 ## Project Structure
 
@@ -32,11 +32,13 @@ GCP_PROJECT_ID=your-project-id
 GCS_BUCKET_NAME=your-bucket-name
 GOOGLE_APPLICATION_CREDENTIALS=base64-encoded-service-account-json
 
-DB_TYPE=postgres
+ENABLE_DATABASE=false
+DB_TYPE=cloudsql
+DB_INSTANCE_CONNECTION_NAME=
 DB_HOST=localhost
 DB_PORT=5432
 DB_DATABASE_NAME=gcp_proxy
-DB_USERNAME=postgres
+DB_USERNAME=gcp_proxy_app
 DB_PASSWORD=
 DB_SSL_MODE=disable
 
@@ -46,6 +48,7 @@ CORS_ALLOWED_ORIGINS=
 ```
 
 When running on GCP with workload identity, leave `GOOGLE_APPLICATION_CREDENTIALS` empty.
+Database settings are only required when `ENABLE_DATABASE=true`.
 
 ## API
 
