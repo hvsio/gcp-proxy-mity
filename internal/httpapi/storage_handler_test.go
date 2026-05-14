@@ -8,14 +8,32 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"gcp-proxy-mity/internal/storage"
 )
 
 type fakeStore struct {
-	files map[string]*storage.FileStream
-	errs  map[string]error
+	files   map[string]*storage.FileStream
+	list    []storage.ObjectMetadata
+	errs    map[string]error
+	listErr error
+}
+
+func (s fakeStore) List(ctx context.Context, prefix string) ([]storage.ObjectMetadata, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+
+	files := make([]storage.ObjectMetadata, 0, len(s.list))
+	for _, file := range s.list {
+		if strings.HasPrefix(file.Path, prefix) {
+			files = append(files, file)
+		}
+	}
+	return files, nil
 }
 
 func (s fakeStore) Open(ctx context.Context, path string) (*storage.FileStream, error) {
@@ -32,6 +50,72 @@ func (s fakeStore) Open(ctx context.Context, path string) (*storage.FileStream, 
 		Size:        file.Size,
 		Body:        io.NopCloser(bytes.NewReader(mustRead(file.Body))),
 	}, nil
+}
+
+func TestListFilesReturnsMetadata(t *testing.T) {
+	updatedAt := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	handler := NewStorageHandler(fakeStore{
+		list: []storage.ObjectMetadata{
+			{
+				Path:        "photos/a.jpg",
+				ContentType: "image/jpeg",
+				Size:        42,
+				UpdatedAt:   updatedAt,
+			},
+			{
+				Path:        "videos/ignored.mp4",
+				ContentType: "video/mp4",
+				Size:        100,
+				UpdatedAt:   updatedAt,
+			},
+		},
+	})
+	mux := http.NewServeMux()
+	handler.SetupRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/storage/files?prefix=photos/", nil)
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var got listResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got.Files) != 1 {
+		t.Fatalf("expected one file, got %+v", got.Files)
+	}
+	if got.Files[0].Name != "photos/a.jpg" {
+		t.Fatalf("expected photos/a.jpg, got %q", got.Files[0].Name)
+	}
+	if got.Files[0].ContentType != "image/jpeg" {
+		t.Fatalf("expected image/jpeg, got %q", got.Files[0].ContentType)
+	}
+	if got.Files[0].Size != 42 {
+		t.Fatalf("expected size 42, got %d", got.Files[0].Size)
+	}
+	if got.Files[0].UpdatedAt != updatedAt.Format(time.RFC3339) {
+		t.Fatalf("expected updated_at %q, got %q", updatedAt.Format(time.RFC3339), got.Files[0].UpdatedAt)
+	}
+}
+
+func TestListFilesMapsErrors(t *testing.T) {
+	handler := NewStorageHandler(fakeStore{listErr: context.DeadlineExceeded})
+	mux := http.NewServeMux()
+	handler.SetupRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/storage/files", nil)
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("expected 504, got %d: %s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestReadFileStreamsObject(t *testing.T) {

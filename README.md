@@ -6,6 +6,7 @@ A Go Cloud Run service that exposes a small read-only HTTP proxy for files store
 
 - Stream a single file from cloud storage with `GET /api/v1/storage/files/{path}`.
 - Return metadata for `HEAD /api/v1/storage/files/{path}` without a response body.
+- List file metadata with `GET /api/v1/storage/files?prefix={optional-prefix}`.
 - Read multiple files with `POST /api/v1/storage/files/read`.
 - Optional IAP JWT validation for protected deployments.
 - Optional CORS allowlist.
@@ -71,6 +72,27 @@ Responses:
 - `404 Not Found` when the storage provider reports a missing object.
 - `504 Gateway Timeout` when the storage read times out.
 - `500 Internal Server Error` for other storage failures.
+
+### List files
+
+```http
+GET /api/v1/storage/files?prefix=photos/
+```
+
+Response:
+
+```json
+{
+  "files": [
+    {
+      "name": "photos/a.jpg",
+      "content_type": "image/jpeg",
+      "size": 123,
+      "updated_at": "2026-05-14T12:00:00Z"
+    }
+  ]
+}
+```
 
 ### Read multiple files
 
