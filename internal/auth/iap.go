@@ -1,7 +1,4 @@
-// Package middleware provides IAP JWT validation so the backend only accepts
-// requests that carry a valid Identity-Aware Proxy assertion (e.g. forwarded
-// by the frontend). Rejects requests without valid IAP identity.
-package middleware
+package auth
 
 import (
 	"context"
@@ -22,25 +19,22 @@ import (
 var errBadJWKS = errors.New("failed to fetch or parse IAP JWKS")
 
 const (
-	iapJWTHeader   = "X-Goog-IAP-JWT-Assertion"
-	iapJWKSURL     = "https://www.gstatic.com/iap/verify/public_key-jwk"
-	iapIssuer      = "https://cloud.google.com/iap"
+	iapJWTHeader    = "X-Goog-IAP-JWT-Assertion"
+	iapJWKSURL      = "https://www.gstatic.com/iap/verify/public_key-jwk"
+	iapIssuer       = "https://cloud.google.com/iap"
 	iapJWKSCacheTTL = 5 * time.Minute
 )
 
-// IAPValidator validates IAP JWTs and enforces allowed emails.
 type IAPValidator struct {
 	audience      string
 	allowedEmails map[string]struct{}
-	jwksURL      string
-	issuer       string
-	mu           sync.RWMutex
-	jwks         *jose.JSONWebKeySet
-	jwksExpiry   time.Time
+	jwksURL       string
+	issuer        string
+	mu            sync.RWMutex
+	jwks          *jose.JSONWebKeySet
+	jwksExpiry    time.Time
 }
 
-// NewIAPValidator builds an IAP validator from config. If cfg.IAP.Audience is
-// empty, validation is disabled (returns nil and no middleware should be applied).
 func NewIAPValidator(cfg *config.Config) (*IAPValidator, error) {
 	if cfg.IAP.Audience == "" || len(cfg.IAP.AllowedEmails) == 0 {
 		return nil, nil
@@ -52,8 +46,8 @@ func NewIAPValidator(cfg *config.Config) (*IAPValidator, error) {
 	return &IAPValidator{
 		audience:      cfg.IAP.Audience,
 		allowedEmails: allowed,
-		jwksURL:      iapJWKSURL,
-		issuer:       iapIssuer,
+		jwksURL:       iapJWKSURL,
+		issuer:        iapIssuer,
 	}, nil
 }
 
@@ -104,9 +98,6 @@ func (v *IAPValidator) fetchJWKS(ctx context.Context) (*jose.JSONWebKeySet, erro
 	return v.jwks, nil
 }
 
-// Validate extracts X-Goog-IAP-JWT-Assertion, verifies signature and claims
-// (issuer, audience, exp), and ensures the email claim is in the allowed list.
-// Returns the verified email and nil on success; otherwise an error and empty string.
 func (v *IAPValidator) Validate(ctx context.Context, rawJWT string) (email string, err error) {
 	if v == nil || rawJWT == "" {
 		return "", http.ErrNoCookie
@@ -131,9 +122,9 @@ func (v *IAPValidator) Validate(ctx context.Context, rawJWT string) (email strin
 	}
 
 	if err := claims.Validate(jwt.Expected{
-		Issuer:       v.issuer,
-		AnyAudience:  jwt.Audience{v.audience},
-		Time:         time.Now(),
+		Issuer:      v.issuer,
+		AnyAudience: jwt.Audience{v.audience},
+		Time:        time.Now(),
 	}); err != nil {
 		return "", err
 	}
@@ -148,9 +139,6 @@ func (v *IAPValidator) Validate(ctx context.Context, rawJWT string) (email strin
 	return email, nil
 }
 
-// RequireIAP returns an http.Handler that only calls next if the request has a
-// valid IAP JWT (X-Goog-IAP-JWT-Assertion) with an allowed email. Otherwise
-// responds with 401. If validator is nil, next is always called (IAP disabled).
 func RequireIAP(validator *IAPValidator, next http.Handler) http.Handler {
 	if validator == nil {
 		return next
@@ -165,14 +153,11 @@ func RequireIAP(validator *IAPValidator, next http.Handler) http.Handler {
 			w.Write([]byte("Missing or invalid IAP identity"))
 			return
 		}
-		// Optional: set header for downstream (e.g. logging)
 		r.Header.Set("X-IAP-Email", email)
 		next.ServeHTTP(w, r)
 	})
 }
 
-// WrapWithIAP wraps next so that IAP is required for all requests except paths in skipPaths.
-// Use skipPaths like []string{"/health", "/ready"} so probes and LB health checks are not blocked.
 func WrapWithIAP(validator *IAPValidator, next http.Handler, skipPaths []string) http.Handler {
 	skip := make(map[string]struct{})
 	for _, p := range skipPaths {

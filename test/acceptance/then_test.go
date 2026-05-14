@@ -8,12 +8,14 @@ import (
 	"testing"
 )
 
-// thenRetrievedContentMatchesOriginal asserts that the retrieved bytes equal the original content.
-func thenRetrievedContentMatchesOriginal(t *testing.T, original, retrieved []byte) {
+func thenRetrievedContentMatchesExpected(t *testing.T, expected, retrieved []byte) {
 	t.Helper()
 
-	if !bytes.Equal(retrieved, original) {
-		t.Errorf("Then: content mismatch: sent %d bytes %q, got %d bytes %q",
-			len(original), string(original), len(retrieved), string(retrieved))
+	if len(expected) == 0 {
+		return
+	}
+	if !bytes.Equal(retrieved, expected) {
+		t.Errorf("Then: content mismatch: expected %d bytes %q, got %d bytes %q",
+			len(expected), string(expected), len(retrieved), string(retrieved))
 	}
 }

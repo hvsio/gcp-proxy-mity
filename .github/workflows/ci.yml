@@ -69,9 +69,10 @@ jobs:
           cat > terraform.tfvars << EOF
           project_id              = "${{ secrets.GCP_PROJECT_ID }}"
           region                  = "$GCP_REGION"
-          backend_container_image = "$GCP_REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME:$GITHUB_SHA"
+          container_image         = "$GCP_REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME:$GITHUB_SHA"
           allowed_iap_user_email  = "${{ vars.ALLOWED_IAP_USER_EMAIL }}"
-          frontend_domain         = "${{ vars.FRONTEND_DOMAIN }}"
+          iap_audience            = "${{ vars.IAP_AUDIENCE }}"
+          cors_allowed_origins    = "${{ vars.CORS_ALLOWED_ORIGINS }}"
           EOF
 
       - name: Terraform Init
@@ -93,6 +94,5 @@ jobs:
         run: |
           cd terraform
           echo "## Deployment Complete! 🚀" >> $GITHUB_STEP_SUMMARY
-          echo "- **IAP-protected URL:** $(terraform output -raw iap_protected_url)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Load Balancer IP (for DNS A record):** $(terraform output -raw load_balancer_ip)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Backend (internal):** \`terraform output -raw backend_cloud_run_uri\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Cloud Run URL:** $(terraform output -raw cloud_run_url)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Bucket:** $(terraform output -raw bucket_name)" >> $GITHUB_STEP_SUMMARY

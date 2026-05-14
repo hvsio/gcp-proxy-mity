@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"gcp-proxy-mity/internal/service"
-
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -25,7 +23,7 @@ func NewPostgresService(pool *pgxpool.Pool) *PostgresService {
 }
 
 // CreateMediaMetadata inserts a new media metadata record
-func (p *PostgresService) CreateMediaMetadata(ctx context.Context, metadata *service.MediaMetadata) error {
+func (p *PostgresService) CreateMediaMetadata(ctx context.Context, metadata *MediaMetadata) error {
 	exifJSON, err := json.Marshal(metadata.EXIFData)
 	if err != nil {
 		return fmt.Errorf("failed to marshal EXIF data: %w", err)
@@ -54,7 +52,7 @@ func (p *PostgresService) CreateMediaMetadata(ctx context.Context, metadata *ser
 }
 
 // GetMediaMetadata retrieves media metadata by file path and user ID
-func (p *PostgresService) GetMediaMetadata(ctx context.Context, filePath string, userID string) (*service.MediaMetadata, error) {
+func (p *PostgresService) GetMediaMetadata(ctx context.Context, filePath string, userID string) (*MediaMetadata, error) {
 	query := `
 		SELECT id, file_path, file_name, content_type, size, created_at, updated_at, exif_data, tags, user_id, is_deleted
 		FROM media_metadata
@@ -63,7 +61,7 @@ func (p *PostgresService) GetMediaMetadata(ctx context.Context, filePath string,
 
 	row := p.pool.QueryRow(ctx, query, filePath, userID)
 
-	var metadata service.MediaMetadata
+	var metadata MediaMetadata
 	var exifJSON, tagsJSON []byte
 
 	err := row.Scan(
@@ -74,7 +72,7 @@ func (p *PostgresService) GetMediaMetadata(ctx context.Context, filePath string,
 
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, service.ErrNotFound
+			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("failed to get media metadata: %w", err)
 	}
@@ -95,7 +93,7 @@ func (p *PostgresService) GetMediaMetadata(ctx context.Context, filePath string,
 }
 
 // UpdateMediaMetadata updates existing media metadata
-func (p *PostgresService) UpdateMediaMetadata(ctx context.Context, metadata *service.MediaMetadata) error {
+func (p *PostgresService) UpdateMediaMetadata(ctx context.Context, metadata *MediaMetadata) error {
 	exifJSON, err := json.Marshal(metadata.EXIFData)
 	if err != nil {
 		return fmt.Errorf("failed to marshal EXIF data: %w", err)
@@ -121,7 +119,7 @@ func (p *PostgresService) UpdateMediaMetadata(ctx context.Context, metadata *ser
 	}
 
 	if result.RowsAffected() == 0 {
-		return service.ErrNotFound
+		return ErrNotFound
 	}
 
 	return nil
@@ -141,14 +139,14 @@ func (p *PostgresService) DeleteMediaMetadata(ctx context.Context, filePath stri
 	}
 
 	if result.RowsAffected() == 0 {
-		return service.ErrNotFound
+		return ErrNotFound
 	}
 
 	return nil
 }
 
 // ListMediaMetadata retrieves paginated list of media metadata for a user
-func (p *PostgresService) ListMediaMetadata(ctx context.Context, userID string, limit, offset int) ([]*service.MediaMetadata, error) {
+func (p *PostgresService) ListMediaMetadata(ctx context.Context, userID string, limit, offset int) ([]*MediaMetadata, error) {
 	query := `
 		SELECT id, file_path, file_name, content_type, size, created_at, updated_at, exif_data, tags, user_id, is_deleted
 		FROM media_metadata
@@ -163,9 +161,9 @@ func (p *PostgresService) ListMediaMetadata(ctx context.Context, userID string, 
 	}
 	defer rows.Close()
 
-	var results []*service.MediaMetadata
+	var results []*MediaMetadata
 	for rows.Next() {
-		var metadata service.MediaMetadata
+		var metadata MediaMetadata
 		var exifJSON, tagsJSON []byte
 
 		err := rows.Scan(
@@ -196,7 +194,7 @@ func (p *PostgresService) ListMediaMetadata(ctx context.Context, userID string, 
 }
 
 // SearchMediaMetadata searches media metadata by query
-func (p *PostgresService) SearchMediaMetadata(ctx context.Context, userID string, query string, limit, offset int) ([]*service.MediaMetadata, error) {
+func (p *PostgresService) SearchMediaMetadata(ctx context.Context, userID string, query string, limit, offset int) ([]*MediaMetadata, error) {
 	searchQuery := `
 		SELECT id, file_path, file_name, content_type, size, created_at, updated_at, exif_data, tags, user_id, is_deleted
 		FROM media_metadata
@@ -213,9 +211,9 @@ func (p *PostgresService) SearchMediaMetadata(ctx context.Context, userID string
 	}
 	defer rows.Close()
 
-	var results []*service.MediaMetadata
+	var results []*MediaMetadata
 	for rows.Next() {
-		var metadata service.MediaMetadata
+		var metadata MediaMetadata
 		var exifJSON, tagsJSON []byte
 
 		err := rows.Scan(
@@ -246,7 +244,7 @@ func (p *PostgresService) SearchMediaMetadata(ctx context.Context, userID string
 }
 
 // CreateSignedURL creates a new signed URL record
-func (p *PostgresService) CreateSignedURL(ctx context.Context, record *service.SignedURLRecord) error {
+func (p *PostgresService) CreateSignedURL(ctx context.Context, record *SignedURLRecord) error {
 	query := `
 		INSERT INTO signed_urls (id, file_path, url, expires_at, created_at, user_id, purpose)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -264,7 +262,7 @@ func (p *PostgresService) CreateSignedURL(ctx context.Context, record *service.S
 }
 
 // GetSignedURL retrieves a signed URL by ID
-func (p *PostgresService) GetSignedURL(ctx context.Context, id string) (*service.SignedURLRecord, error) {
+func (p *PostgresService) GetSignedURL(ctx context.Context, id string) (*SignedURLRecord, error) {
 	query := `
 		SELECT id, file_path, url, expires_at, created_at, user_id, purpose
 		FROM signed_urls
@@ -273,7 +271,7 @@ func (p *PostgresService) GetSignedURL(ctx context.Context, id string) (*service
 
 	row := p.pool.QueryRow(ctx, query, id)
 
-	var record service.SignedURLRecord
+	var record SignedURLRecord
 	err := row.Scan(
 		&record.ID, &record.FilePath, &record.URL, &record.ExpiresAt,
 		&record.CreatedAt, &record.UserID, &record.Purpose,
@@ -281,7 +279,7 @@ func (p *PostgresService) GetSignedURL(ctx context.Context, id string) (*service
 
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, service.ErrNotFound
+			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("failed to get signed URL: %w", err)
 	}
