@@ -6,8 +6,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"cloud.google.com/go/cloudsqlconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // CloudSQLConfig contains configuration for Google Cloud SQL connection
@@ -17,8 +17,8 @@ type CloudSQLConfig struct {
 	Username               string
 	Password               string
 	MaxConnections         int32
-	MaxIdleTime           time.Duration
-	MaxLifetime           time.Duration
+	MaxIdleTime            time.Duration
+	MaxLifetime            time.Duration
 }
 
 // NewCloudSQLPool creates a new connection pool for Google Cloud SQL

@@ -11,21 +11,14 @@ import (
 	"syscall"
 	"time"
 
+	"gcp-proxy-mity/internal/auth"
 	"gcp-proxy-mity/internal/config"
-	"gcp-proxy-mity/internal/handler"
-	"gcp-proxy-mity/internal/infrastructure/database"
-	"gcp-proxy-mity/internal/infrastructure/gcs"
-	"gcp-proxy-mity/internal/middleware"
-	"gcp-proxy-mity/internal/service"
-	gcsclient "gcp-proxy-mity/pkg/storage/gcs"
+	"gcp-proxy-mity/internal/httpapi"
+	"gcp-proxy-mity/internal/platform/database"
+	"gcp-proxy-mity/internal/storage"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	_ "embed"
 )
-
-//go:embed migrations.sql
-var migrationSQL string
 
 func main() {
 	cfg := config.Load()
@@ -53,7 +46,7 @@ func main() {
 		}
 	})
 
-	iapValidator, err := middleware.NewIAPValidator(cfg)
+	iapValidator, err := auth.NewIAPValidator(cfg)
 	if err != nil {
 		log.Fatalf("IAP validator: %v", err)
 	}
@@ -61,11 +54,11 @@ func main() {
 		log.Println("IAP JWT validation enabled; backend will reject requests without valid X-Goog-IAP-JWT-Assertion")
 	}
 
-	iapHandler := middleware.WrapWithIAP(iapValidator, mux, []string{"/health", "/ready"})
+	iapHandler := auth.WrapWithIAP(iapValidator, mux, []string{"/health", "/ready"})
 
 	var rootHandler http.Handler = iapHandler
 	if len(cfg.CORS.AllowedOrigins) > 0 {
-		rootHandler = middleware.CORS(middleware.CORSConfig{
+		rootHandler = httpapi.CORS(httpapi.CORSConfig{
 			AllowedOrigins: cfg.CORS.AllowedOrigins,
 		})(iapHandler)
 	}
@@ -89,21 +82,19 @@ func main() {
 	}
 	defer dbPool.Close()
 
-	if err := database.RunMigrations(ctx, dbPool, migrationSQL); err != nil {
+	if err := database.RunMigrations(ctx, dbPool, database.MigrationsSQL); err != nil {
 		log.Fatalf("Failed to run database migrations: %v", err)
 	}
 
 	_ = database.NewPostgresService(dbPool)
 
-	gcsClient, err := gcsclient.NewClient(ctx, cfg.Storage.GCPProjectID, cfg.Storage.GCSBucketName, cfg.Storage.GoogleCredentials)
+	store, err := storage.NewGCSStore(ctx, cfg.Storage.GCSBucketName, cfg.Storage.GoogleCredentials)
 	if err != nil {
 		log.Fatalf("Failed to create GCS client: %v", err)
 	}
-	defer gcsClient.Close()
+	defer store.Close()
 
-	gcsStorage := gcs.NewStorage(gcsClient)
-	storageService := service.NewStorageService(gcsStorage)
-	storageHandler := handler.NewStorageHandler(storageService)
+	storageHandler := httpapi.NewStorageHandler(store)
 	storageHandler.SetupRoutes(mux)
 
 	ready.Store(true)
@@ -150,11 +141,11 @@ func initializeDatabase(ctx context.Context, dbConfig config.DatabaseConfig) (*p
 			Username:               dbConfig.Username,
 			Password:               dbConfig.Password,
 			MaxConnections:         dbConfig.MaxConnections,
-			MaxIdleTime:           dbConfig.MaxIdleTime,
-			MaxLifetime:           dbConfig.MaxLifetime,
+			MaxIdleTime:            dbConfig.MaxIdleTime,
+			MaxLifetime:            dbConfig.MaxLifetime,
 		}
 		return database.NewCloudSQLPool(ctx, config)
-		
+
 	case "postgres":
 		dsn := dbConfig.DSN
 		if dsn == "" {
@@ -163,7 +154,7 @@ func initializeDatabase(ctx context.Context, dbConfig config.DatabaseConfig) (*p
 				dbConfig.DatabaseName, dbConfig.SSLMode)
 		}
 		return database.NewStandardPostgresPool(ctx, dsn, dbConfig.MaxConnections)
-		
+
 	default:
 		return nil, fmt.Errorf("unsupported database type: %s", dbConfig.Type)
 	}

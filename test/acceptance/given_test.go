@@ -7,13 +7,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"gcp-proxy-mity/internal/config"
-	"gcp-proxy-mity/internal/handler"
-	"gcp-proxy-mity/internal/infrastructure/gcs"
-	"gcp-proxy-mity/internal/service"
-	gcsclient "gcp-proxy-mity/pkg/storage/gcs"
+	"gcp-proxy-mity/internal/httpapi"
+	"gcp-proxy-mity/internal/storage"
 )
 
 // harness holds the Given state: app server, client, test file path and content, and cleanup.
@@ -21,7 +20,7 @@ type harness struct {
 	BaseURL  string
 	Client   *http.Client
 	FilePath string
-	Content  []byte
+	Expected []byte
 	Cleanup  func()
 }
 
@@ -31,39 +30,38 @@ func givenAppWithRealGCS(t *testing.T) harness {
 	t.Helper()
 
 	cfg := config.Load()
-	if cfg.GCPProjectID == "" || cfg.GCSBucketName == "" || cfg.GoogleCredentials == "" {
-		t.Skip("Skipping acceptance test: GCP credentials not set (GCP_PROJECT_ID, GCS_BUCKET_NAME, STORAGE_GOOGLE_APPLICATION_CREDENTIALS)")
+	filePath := os.Getenv("ACCEPTANCE_READ_FILE_PATH")
+	if filePath == "" {
+		t.Skip("Skipping acceptance test: ACCEPTANCE_READ_FILE_PATH is not set")
+	}
+	if cfg.Storage.GCPProjectID == "" || cfg.Storage.GCSBucketName == "" || cfg.Storage.GoogleCredentials == "" {
+		t.Skip("Skipping acceptance test: GCP credentials not set (GCP_PROJECT_ID, GCS_BUCKET_NAME, GOOGLE_APPLICATION_CREDENTIALS)")
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Given: invalid config: %v", err)
 	}
 
 	ctx := context.Background()
-	gcsClient, err := gcsclient.NewClient(ctx, cfg.GCPProjectID, cfg.GCSBucketName, cfg.GoogleCredentials)
+	store, err := storage.NewGCSStore(ctx, cfg.Storage.GCSBucketName, cfg.Storage.GoogleCredentials)
 	if err != nil {
 		t.Fatalf("Given: failed to create GCS client: %v", err)
 	}
 
-	storage := gcs.NewStorage(gcsClient)
-	storageService := service.NewStorageService(storage)
-	storageHandler := handler.NewStorageHandler(storageService)
+	storageHandler := httpapi.NewStorageHandler(store)
 	mux := http.NewServeMux()
 	storageHandler.SetupRoutes(mux)
 	server := httptest.NewServer(mux)
 
-	filePath := "acceptance-test/sample-file.txt"
-	content := []byte("Hello, acceptance test!\nThis is the file content.")
-
 	cleanup := func() {
 		server.Close()
-		gcsClient.Close()
+		store.Close()
 	}
 
 	return harness{
 		BaseURL:  server.URL,
 		Client:   server.Client(),
 		FilePath: filePath,
-		Content:  content,
+		Expected: []byte(os.Getenv("ACCEPTANCE_EXPECTED_CONTENT")),
 		Cleanup:  cleanup,
 	}
 }
