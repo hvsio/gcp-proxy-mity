@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"gcp-proxy-mity/internal/storage"
 )
@@ -24,8 +25,34 @@ func (h *StorageHandler) SetupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/storage/files/read", h.ReadFiles)
 	mux.HandleFunc("/api/v1/storage/files/", h.ReadFile)
 	mux.HandleFunc("/api/v1/storage/files", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			h.ListFiles(w, r)
+			return
+		}
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	})
+}
+
+func (h *StorageHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
+	files, err := h.store.List(r.Context(), r.URL.Query().Get("prefix"))
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+
+	response := listResponse{Files: make([]fileMetadata, 0, len(files))}
+	for _, file := range files {
+		response.Files = append(response.Files, fileMetadata{
+			Name:        file.Path,
+			ContentType: file.ContentType,
+			Size:        file.Size,
+			UpdatedAt:   formatTime(file.UpdatedAt),
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }
 
 func (h *StorageHandler) ReadFile(w http.ResponseWriter, r *http.Request) {
@@ -133,10 +160,18 @@ func writeStorageError(w http.ResponseWriter, err error) {
 	}
 }
 
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
+}
+
 type fileMetadata struct {
 	Name        string `json:"name"`
 	ContentType string `json:"content_type"`
 	Size        int64  `json:"size"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
 }
 
 type fileData struct {
@@ -147,6 +182,10 @@ type fileData struct {
 type readResponse struct {
 	Files  []fileData  `json:"files"`
 	Errors []readError `json:"errors"`
+}
+
+type listResponse struct {
+	Files []fileMetadata `json:"files"`
 }
 
 type readError struct {

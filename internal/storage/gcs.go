@@ -5,8 +5,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"sort"
 
 	cloudstorage "cloud.google.com/go/storage"
+	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 )
 
@@ -38,6 +40,32 @@ func NewGCSStore(ctx context.Context, bucketName string, credentials string) (*G
 
 func (s *GCSStore) Close() error {
 	return s.client.Close()
+}
+
+func (s *GCSStore) List(ctx context.Context, prefix string) ([]ObjectMetadata, error) {
+	it := s.bucket.Objects(ctx, &cloudstorage.Query{Prefix: prefix})
+	files := make([]ObjectMetadata, 0)
+
+	for {
+		attrs, err := it.Next()
+		if errors.Is(err, iterator.Done) {
+			break
+		}
+		if err != nil {
+			return nil, mapGCSError("list objects", err)
+		}
+		files = append(files, ObjectMetadata{
+			Path:        attrs.Name,
+			ContentType: attrs.ContentType,
+			Size:        attrs.Size,
+			UpdatedAt:   attrs.Updated,
+		})
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].Path < files[j].Path
+	})
+	return files, nil
 }
 
 func (s *GCSStore) Open(ctx context.Context, path string) (*FileStream, error) {
