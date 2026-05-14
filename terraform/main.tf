@@ -4,7 +4,7 @@
 # ---------------------------------------------------------------------------
 
 terraform {
-  required_version = ">= 1.0"
+  required_version = ">= 1.7"
   required_providers {
     google = {
       source  = "hashicorp/google"
@@ -18,6 +18,126 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.0"
     }
+  }
+}
+
+removed {
+  from = google_compute_network.vpc
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_compute_subnetwork.subnet
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_compute_global_address.private_ip_range
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_service_networking_connection.private_vpc_connection
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_vpc_access_connector.connector
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_storage_bucket.storage
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_storage_bucket_iam_member.storage_admin
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = random_password.db_password
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_secret_manager_secret.db_password
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_secret_manager_secret_version.db_password
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_sql_database_instance.postgres
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_sql_database.app
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_sql_user.postgres
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_project_iam_member.cloudsql_client
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = google_secret_manager_secret_iam_member.app_sa_secret_access
+
+  lifecycle {
+    destroy = false
   }
 }
 
@@ -69,13 +189,13 @@ resource "google_project_service" "apis" {
 # Cloud SQL PostgreSQL
 # ---------------------------------------------------------------------------
 
-resource "random_password" "db_password" {
+resource "random_password" "app_db_password" {
   count   = var.enable_database ? 1 : 0
   length  = 32
   special = false
 }
 
-resource "google_secret_manager_secret" "db_password" {
+resource "google_secret_manager_secret" "app_db_password" {
   count     = var.enable_database ? 1 : 0
   secret_id = "gcp-proxy-mity-cloudsql-password"
   replication {
@@ -84,13 +204,13 @@ resource "google_secret_manager_secret" "db_password" {
   depends_on = [google_project_service.apis]
 }
 
-resource "google_secret_manager_secret_version" "db_password" {
+resource "google_secret_manager_secret_version" "app_db_password" {
   count       = var.enable_database ? 1 : 0
-  secret      = google_secret_manager_secret.db_password[0].id
-  secret_data = random_password.db_password[0].result
+  secret      = google_secret_manager_secret.app_db_password[0].id
+  secret_data = random_password.app_db_password[0].result
 }
 
-resource "google_sql_database_instance" "postgres" {
+resource "google_sql_database_instance" "app" {
   count               = var.enable_database ? 1 : 0
   name                = "gcp-proxy-mity-db"
   database_version    = "POSTGRES_15"
@@ -119,17 +239,17 @@ resource "google_sql_database_instance" "postgres" {
   ]
 }
 
-resource "google_sql_database" "app" {
+resource "google_sql_database" "app_database" {
   count    = var.enable_database ? 1 : 0
   name     = "gcp_proxy"
-  instance = google_sql_database_instance.postgres[0].name
+  instance = google_sql_database_instance.app[0].name
 }
 
 resource "google_sql_user" "app" {
   count    = var.enable_database ? 1 : 0
   name     = "gcp_proxy_app"
-  instance = google_sql_database_instance.postgres[0].name
-  password = random_password.db_password[0].result
+  instance = google_sql_database_instance.app[0].name
+  password = random_password.app_db_password[0].result
 }
 
 # ---------------------------------------------------------------------------
@@ -148,16 +268,16 @@ resource "google_storage_bucket_iam_member" "storage_viewer" {
   member = "serviceAccount:${google_service_account.app_sa.email}"
 }
 
-resource "google_project_iam_member" "cloudsql_client" {
+resource "google_project_iam_member" "app_cloudsql_client" {
   count   = var.enable_database ? 1 : 0
   project = var.project_id
   role    = "roles/cloudsql.client"
   member  = "serviceAccount:${google_service_account.app_sa.email}"
 }
 
-resource "google_secret_manager_secret_iam_member" "app_sa_secret_access" {
+resource "google_secret_manager_secret_iam_member" "app_sa_secret_access_app_db_password" {
   count     = var.enable_database ? 1 : 0
-  secret_id = google_secret_manager_secret.db_password[0].secret_id
+  secret_id = google_secret_manager_secret.app_db_password[0].secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.app_sa.email}"
 }
@@ -217,7 +337,7 @@ resource "google_cloud_run_v2_service" "app" {
 
         content {
           name  = "DB_INSTANCE_CONNECTION_NAME"
-          value = google_sql_database_instance.postgres[0].connection_name
+          value = google_sql_database_instance.app[0].connection_name
         }
       }
 
@@ -226,7 +346,7 @@ resource "google_cloud_run_v2_service" "app" {
 
         content {
           name  = "DB_DATABASE_NAME"
-          value = google_sql_database.app[0].name
+          value = google_sql_database.app_database[0].name
         }
       }
 
@@ -255,7 +375,7 @@ resource "google_cloud_run_v2_service" "app" {
           name = "DB_PASSWORD"
           value_source {
             secret_key_ref {
-              secret  = google_secret_manager_secret.db_password[0].secret_id
+              secret  = google_secret_manager_secret.app_db_password[0].secret_id
               version = "latest"
             }
           }

@@ -10,5 +10,5 @@ output "bucket_name" {
 
 output "cloudsql_connection_name" {
   description = "Cloud SQL instance connection name"
-  value       = var.enable_database ? google_sql_database_instance.postgres[0].connection_name : null
+  value       = var.enable_database ? google_sql_database_instance.app[0].connection_name : null
 }
