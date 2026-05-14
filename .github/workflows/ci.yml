@@ -11,6 +11,9 @@ env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   GCP_REGION: ${{ vars.REGION || 'europe-west4' }}
   SERVICE_NAME: gcp-proxy-mity
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'homey-bw58-terraform-state' }}
+  TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX || 'gcp-proxy-mity' }}
+  STORAGE_BUCKET_NAME: ${{ vars.STORAGE_BUCKET_NAME || 'aj-cloud' }}
 
 jobs:
   deploy:
@@ -19,6 +22,7 @@ jobs:
       id-token: 'write'
 
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,34 +65,59 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.6.0
+          terraform_version: 1.13.5
 
       - name: Create terraform.tfvars
+        env:
+          ALLOWED_IAP_USER_EMAILS: ${{ vars.ALLOWED_IAP_USER_EMAILS || vars.ALLOWED_IAP_USER_EMAIL || '' }}
+          CORS_ALLOWED_ORIGINS: ${{ vars.CORS_ALLOWED_ORIGINS || '' }}
+          IAP_AUDIENCE: ${{ vars.IAP_AUDIENCE || '' }}
+          ALLOW_PUBLIC_INVOKER: ${{ vars.ALLOW_PUBLIC_INVOKER || 'false' }}
         run: |
           cd terraform
-          cat > terraform.tfvars << EOF
-          project_id              = "${{ secrets.GCP_PROJECT_ID }}"
-          region                  = "$GCP_REGION"
-          container_image         = "$GCP_REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME:$GITHUB_SHA"
-          allowed_iap_user_email  = "${{ vars.ALLOWED_IAP_USER_EMAIL }}"
-          iap_audience            = "${{ vars.IAP_AUDIENCE }}"
-          cors_allowed_origins    = "${{ vars.CORS_ALLOWED_ORIGINS }}"
-          EOF
+          python3 - <<'PY' > terraform.tfvars
+          import json
+          import os
+
+          def csv_list(name):
+              return [item.strip() for item in os.environ.get(name, "").split(",") if item.strip()]
+
+          values = {
+              "project_id": os.environ["PROJECT_ID"],
+              "region": os.environ["GCP_REGION"],
+              "container_image": f'{os.environ["GCP_REGION"]}-docker.pkg.dev/{os.environ["PROJECT_ID"]}/{os.environ["SERVICE_NAME"]}/{os.environ["SERVICE_NAME"]}:{os.environ["GITHUB_SHA"]}',
+              "storage_bucket_name": os.environ["STORAGE_BUCKET_NAME"],
+              "allow_public_invoker": os.environ["ALLOW_PUBLIC_INVOKER"].lower() == "true",
+              "allowed_iap_user_emails": csv_list("ALLOWED_IAP_USER_EMAILS"),
+              "iap_audience": os.environ["IAP_AUDIENCE"],
+              "cors_allowed_origins": csv_list("CORS_ALLOWED_ORIGINS"),
+          }
+
+          for key, value in values.items():
+              if isinstance(value, bool):
+                  rendered = "true" if value else "false"
+              else:
+                  rendered = json.dumps(value)
+              print(f"{key} = {rendered}")
+          PY
+          cat terraform.tfvars
 
       - name: Terraform Init
         run: |
           cd terraform
-          terraform init
+          terraform init -input=false \
+            -backend-config=bucket="$TF_STATE_BUCKET" \
+            -backend-config=prefix="$TF_STATE_PREFIX"
 
       - name: Terraform Plan
         run: |
           cd terraform
-          terraform plan -out=tfplan
+          terraform plan -input=false -out=tfplan
 
       - name: Terraform Apply
         run: |
           cd terraform
-          terraform apply -auto-approve tfplan
+          terraform apply -input=false -auto-approve tfplan
 
       - name: Get Deployment Info
         run: |
