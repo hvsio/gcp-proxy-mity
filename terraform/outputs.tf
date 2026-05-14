@@ -5,7 +5,7 @@ output "cloud_run_url" {
 
 output "bucket_name" {
   description = "Name of the storage bucket"
-  value       = google_storage_bucket.storage.name
+  value       = var.storage_bucket_name
 }
 
 output "cloudsql_connection_name" {

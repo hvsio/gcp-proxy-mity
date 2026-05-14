@@ -38,6 +38,21 @@ variable "container_image" {
 }
 
 # ---------------------------------------------------------------------------
+# Storage
+# ---------------------------------------------------------------------------
+
+variable "storage_bucket_name" {
+  description = "Existing GCS bucket used by the storage proxy."
+  type        = string
+  default     = "aj-cloud"
+
+  validation {
+    condition     = var.storage_bucket_name != ""
+    error_message = "storage_bucket_name must not be empty."
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Optional database
 # ---------------------------------------------------------------------------
 
@@ -141,19 +156,4 @@ variable "cors_allowed_origins" {
   description = "Allowed CORS origins, e.g. https://album.example.com."
   type        = list(string)
   default     = []
-}
-
-# ---------------------------------------------------------------------------
-# Storage retention
-# ---------------------------------------------------------------------------
-
-variable "bucket_lifecycle_delete_age_days" {
-  description = "Optional number of days after which bucket objects are deleted. Null keeps objects indefinitely."
-  type        = number
-  default     = null
-
-  validation {
-    condition     = var.bucket_lifecycle_delete_age_days == null || var.bucket_lifecycle_delete_age_days > 0
-    error_message = "bucket_lifecycle_delete_age_days must be null or greater than zero."
-  }
 }
