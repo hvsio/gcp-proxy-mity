@@ -3,7 +3,7 @@
 GCP infrastructure for the read-only storage proxy:
 
 - Cloud Run service for `gcp-proxy-mity`
-- Google Cloud Storage bucket
+- Existing Google Cloud Storage bucket, defaulting to `aj-cloud`
 - Optional Cloud SQL Postgres instance for metadata features
 - Optional existing VPC connector with private-ranges-only egress
 - Secret Manager entry for the database password when Cloud SQL is enabled
@@ -13,7 +13,7 @@ GCP infrastructure for the read-only storage proxy:
 
 ```text
 backend.tf      # Terraform state backend declaration
-main.tf         # GCP APIs, optional Cloud SQL, bucket, Cloud Run, IAM
+main.tf         # GCP APIs, optional Cloud SQL, bucket IAM, Cloud Run
 variables.tf    # project, region, image, IAP, CORS variables
 outputs.tf      # Cloud Run URL, bucket name, optional Cloud SQL connection name
 ```
@@ -25,13 +25,13 @@ outputs.tf      # Cloud Run URL, bucket name, optional Cloud SQL connection name
 | `project_id` | GCP project ID |
 | `region` | GCP region, defaults to `europe-west4` |
 | `container_image` | Immutable Cloud Run image, not `:latest` |
+| `storage_bucket_name` | Existing GCS bucket used by the app, defaults to `aj-cloud` |
 | `enable_database` | Creates Cloud SQL and enables app DB startup when `true` |
 | `vpc_connector_id` | Optional existing connector for private-ranges-only egress |
 | `allow_public_invoker` | Grants unauthenticated Cloud Run invocation when `true` |
 | `allowed_iap_user_emails` | Emails allowed by backend IAP validation |
 | `iap_audience` | Expected IAP JWT audience; empty disables backend JWT validation |
 | `cors_allowed_origins` | List of allowed CORS origins |
-| `bucket_lifecycle_delete_age_days` | Optional object deletion age; `null` keeps objects indefinitely |
 
 ## Low-Cost Database Defaults
 

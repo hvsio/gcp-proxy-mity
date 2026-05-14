@@ -133,35 +133,6 @@ resource "google_sql_user" "app" {
 }
 
 # ---------------------------------------------------------------------------
-# GCS bucket
-# ---------------------------------------------------------------------------
-
-resource "google_storage_bucket" "storage" {
-  name                        = "${var.project_id}-gcp-proxy-mity-storage"
-  location                    = var.region
-  uniform_bucket_level_access = true
-
-  versioning {
-    enabled = true
-  }
-
-  dynamic "lifecycle_rule" {
-    for_each = var.bucket_lifecycle_delete_age_days == null ? [] : [var.bucket_lifecycle_delete_age_days]
-
-    content {
-      condition {
-        age = lifecycle_rule.value
-      }
-      action {
-        type = "Delete"
-      }
-    }
-  }
-
-  depends_on = [google_project_service.apis]
-}
-
-# ---------------------------------------------------------------------------
 # Service account and IAM
 # ---------------------------------------------------------------------------
 
@@ -172,7 +143,7 @@ resource "google_service_account" "app_sa" {
 }
 
 resource "google_storage_bucket_iam_member" "storage_viewer" {
-  bucket = google_storage_bucket.storage.name
+  bucket = var.storage_bucket_name
   role   = "roles/storage.objectViewer"
   member = "serviceAccount:${google_service_account.app_sa.email}"
 }
@@ -225,7 +196,7 @@ resource "google_cloud_run_v2_service" "app" {
       }
       env {
         name  = "GCS_BUCKET_NAME"
-        value = google_storage_bucket.storage.name
+        value = var.storage_bucket_name
       }
       env {
         name  = "ENABLE_DATABASE"
