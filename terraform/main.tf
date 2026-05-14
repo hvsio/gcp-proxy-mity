@@ -98,17 +98,18 @@ resource "google_sql_database_instance" "postgres" {
   deletion_protection = true
 
   settings {
+    activation_policy = var.db_activation_policy
     tier              = "db-f1-micro"
     availability_type = "ZONAL"
     disk_size         = 10
-    disk_type         = "PD_SSD"
+    disk_type         = var.db_disk_type
 
     backup_configuration {
       enabled                        = true
       start_time                     = "02:00"
-      point_in_time_recovery_enabled = true
+      point_in_time_recovery_enabled = var.db_point_in_time_recovery_enabled
       backup_retention_settings {
-        retained_backups = 7
+        retained_backups = var.db_backup_retention_count
       }
     }
   }
@@ -264,6 +265,15 @@ resource "google_cloud_run_v2_service" "app" {
         content {
           name  = "DB_USERNAME"
           value = google_sql_user.app[0].name
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.enable_database ? [1] : []
+
+        content {
+          name  = "DB_MAX_CONNECTIONS"
+          value = tostring(var.db_max_connections)
         }
       }
 

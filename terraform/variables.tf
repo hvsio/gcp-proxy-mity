@@ -47,6 +47,56 @@ variable "enable_database" {
   default     = false
 }
 
+variable "db_disk_type" {
+  description = "Cloud SQL disk type. PD_HDD is the lowest-cost option for low-traffic deployments."
+  type        = string
+  default     = "PD_HDD"
+
+  validation {
+    condition     = contains(["PD_HDD", "PD_SSD"], var.db_disk_type)
+    error_message = "db_disk_type must be either PD_HDD or PD_SSD."
+  }
+}
+
+variable "db_point_in_time_recovery_enabled" {
+  description = "Enable Cloud SQL point-in-time recovery. Keep false for lowest idle backup cost."
+  type        = bool
+  default     = false
+}
+
+variable "db_backup_retention_count" {
+  description = "Number of automated Cloud SQL backups to retain. One is the lowest reasonable safety floor."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.db_backup_retention_count >= 1 && var.db_backup_retention_count <= 365
+    error_message = "db_backup_retention_count must be between 1 and 365."
+  }
+}
+
+variable "db_activation_policy" {
+  description = "Cloud SQL activation policy. ALWAYS keeps the DB available; NEVER stops it when idle by configuration."
+  type        = string
+  default     = "ALWAYS"
+
+  validation {
+    condition     = contains(["ALWAYS", "NEVER"], var.db_activation_policy)
+    error_message = "db_activation_policy must be either ALWAYS or NEVER."
+  }
+}
+
+variable "db_max_connections" {
+  description = "Maximum PostgreSQL connections opened by each Cloud Run instance."
+  type        = number
+  default     = 3
+
+  validation {
+    condition     = var.db_max_connections >= 1 && var.db_max_connections <= 10
+    error_message = "db_max_connections must be between 1 and 10."
+  }
+}
+
 # ---------------------------------------------------------------------------
 # Optional private egress
 # ---------------------------------------------------------------------------
