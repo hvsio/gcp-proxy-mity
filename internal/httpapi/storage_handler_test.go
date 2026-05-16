@@ -243,6 +243,72 @@ func TestReadFilesReturnsPartialBatch(t *testing.T) {
 	}
 }
 
+func TestReadFilesReadsAllImagesByPrefix(t *testing.T) {
+	handler := NewStorageHandler(fakeStore{
+		list: []storage.ObjectMetadata{
+			{Path: "photos/a.jpg", ContentType: "image/jpeg", Size: 1},
+			{Path: "photos/b.png", ContentType: "image/png", Size: 2},
+			{Path: "photos/ignored.txt", ContentType: "text/plain", Size: 3},
+			{Path: "other/c.jpg", ContentType: "image/jpeg", Size: 4},
+		},
+		files: map[string]*storage.FileStream{
+			"photos/a.jpg": {
+				Path:        "photos/a.jpg",
+				ContentType: "image/jpeg",
+				Size:        1,
+				Body:        io.NopCloser(bytes.NewReader([]byte("a"))),
+			},
+			"photos/b.png": {
+				Path:        "photos/b.png",
+				ContentType: "image/png",
+				Size:        2,
+				Body:        io.NopCloser(bytes.NewReader([]byte("bb"))),
+			},
+			"photos/ignored.txt": {
+				Path:        "photos/ignored.txt",
+				ContentType: "text/plain",
+				Size:        3,
+				Body:        io.NopCloser(bytes.NewReader([]byte("txt"))),
+			},
+			"other/c.jpg": {
+				Path:        "other/c.jpg",
+				ContentType: "image/jpeg",
+				Size:        4,
+				Body:        io.NopCloser(bytes.NewReader([]byte("cccc"))),
+			},
+		},
+	})
+	mux := http.NewServeMux()
+	handler.SetupRoutes(mux)
+
+	body := bytes.NewBufferString(`{"prefix":"photos/"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/storage/files/read", body)
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var got readResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got.Errors) != 0 {
+		t.Fatalf("expected no errors, got %+v", got.Errors)
+	}
+	if len(got.Files) != 2 {
+		t.Fatalf("expected two images, got %+v", got.Files)
+	}
+	if got.Files[0].Metadata.Name != "photos/a.jpg" || string(got.Files[0].Content) != "a" {
+		t.Fatalf("expected first image, got %+v", got.Files[0])
+	}
+	if got.Files[1].Metadata.Name != "photos/b.png" || string(got.Files[1].Content) != "bb" {
+		t.Fatalf("expected second image, got %+v", got.Files[1])
+	}
+}
+
 func TestCORSAllowsConfiguredOrigin(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
