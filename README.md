@@ -8,6 +8,7 @@ A Go Cloud Run service that exposes a small read-only HTTP proxy for files store
 - Return metadata for `HEAD /api/v1/storage/files/{path}` without a response body.
 - List file metadata with `GET /api/v1/storage/files?prefix={optional-prefix}`.
 - Read multiple files with `POST /api/v1/storage/files/read`.
+- Read all images under a prefix with `POST /api/v1/storage/files/read`.
 - Optional IAP JWT validation for protected deployments.
 - Optional CORS allowlist.
 - Optional Cloud SQL/Postgres wiring and migrations for metadata features.
@@ -130,6 +131,19 @@ The response keeps successful files and per-file errors separate:
   ]
 }
 ```
+
+To read every image object under a bucket prefix, send a `prefix` without `file_paths`:
+
+```http
+POST /api/v1/storage/files/read
+Content-Type: application/json
+
+{
+  "prefix": "photos/"
+}
+```
+
+Only objects whose listed content type starts with `image/` are read.
 
 ## Development
 

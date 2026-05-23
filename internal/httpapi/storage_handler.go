@@ -100,21 +100,38 @@ func (h *StorageHandler) ReadFiles(w http.ResponseWriter, r *http.Request) {
 
 	var request struct {
 		FilePaths []string `json:"file_paths"`
+		Prefix    string   `json:"prefix"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if len(request.FilePaths) == 0 {
+	if len(request.FilePaths) == 0 && request.Prefix == "" {
 		http.Error(w, "No file paths provided", http.StatusBadRequest)
 		return
 	}
 
+	filePaths := request.FilePaths
+	if len(filePaths) == 0 {
+		files, err := h.store.List(r.Context(), request.Prefix)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+
+		filePaths = make([]string, 0, len(files))
+		for _, file := range files {
+			if strings.HasPrefix(file.ContentType, "image/") {
+				filePaths = append(filePaths, file.Path)
+			}
+		}
+	}
+
 	response := readResponse{
-		Files:  make([]fileData, 0, len(request.FilePaths)),
+		Files:  make([]fileData, 0, len(filePaths)),
 		Errors: make([]readError, 0),
 	}
-	for _, filePath := range request.FilePaths {
+	for _, filePath := range filePaths {
 		file, err := h.store.Open(r.Context(), filePath)
 		if err != nil {
 			response.Errors = append(response.Errors, readError{FilePath: filePath, Error: err.Error()})
