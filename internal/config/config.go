@@ -55,9 +55,10 @@ type DatabaseConfig struct {
 
 // StorageConfig holds storage-related configuration
 type StorageConfig struct {
-	GCPProjectID      string
-	GCSBucketName     string
-	GoogleCredentials string
+	GCPProjectID                 string
+	GCSBucketName                string
+	GoogleCredentials            string
+	SignedURLServiceAccountEmail string
 }
 
 // Load loads configuration from environment variables and .env file
@@ -88,9 +89,10 @@ func Load() *Config {
 			DSN:                    getEnv("DATABASE_URL", ""), // Override with direct DSN
 		},
 		Storage: StorageConfig{
-			GCPProjectID:      getEnv("GCP_PROJECT_ID", ""),
-			GCSBucketName:     getEnv("GCS_BUCKET_NAME", ""),
-			GoogleCredentials: getEnv("GOOGLE_APPLICATION_CREDENTIALS", ""),
+			GCPProjectID:                 getEnv("GCP_PROJECT_ID", ""),
+			GCSBucketName:                getEnv("GCS_BUCKET_NAME", ""),
+			GoogleCredentials:            getEnv("GOOGLE_APPLICATION_CREDENTIALS", ""),
+			SignedURLServiceAccountEmail: getEnv("SIGNED_URL_SERVICE_ACCOUNT_EMAIL", ""),
 		},
 		IAP: IAPConfig{
 			Audience:      getEnv("IAP_AUDIENCE", ""),

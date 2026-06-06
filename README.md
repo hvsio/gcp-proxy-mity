@@ -1,6 +1,6 @@
 # GCP Proxy Mity
 
-A Go Cloud Run service that exposes a small read-only HTTP proxy for files stored in Google Cloud Storage. The storage boundary is provider-neutral so the backing implementation can be swapped later without changing the HTTP API.
+A Go Cloud Run service that exposes GCS-backed storage APIs and first-party photo-library APIs for Uni Album. The storage boundary is provider-neutral so the backing implementation can be swapped later without changing the HTTP API.
 
 ## Features
 
@@ -12,12 +12,14 @@ A Go Cloud Run service that exposes a small read-only HTTP proxy for files store
 - Optional IAP JWT validation for protected deployments.
 - Optional CORS allowlist.
 - Optional Cloud SQL/Postgres wiring and migrations for metadata features.
+- Photo-library APIs for assets, albums, favorite state, upload, signed media URLs, and background job status.
 
 ## Project Structure
 
 ```text
 cmd/server/                  # Application entry point
-internal/auth/               # IAP validation
+internal/domain/photo/       # Photo-library domain objects and repository contracts
+internal/auth/               # IAP signed JWT validation
 internal/config/             # Environment configuration
 internal/httpapi/            # HTTP routes, handlers, CORS
 internal/storage/            # Read-only storage abstraction and GCS adapter
@@ -33,6 +35,7 @@ PORT=8080
 GCP_PROJECT_ID=your-project-id
 GCS_BUCKET_NAME=your-bucket-name
 GOOGLE_APPLICATION_CREDENTIALS=base64-encoded-service-account-json
+SIGNED_URL_SERVICE_ACCOUNT_EMAIL=gcp-proxy-mity-app@your-project-id.iam.gserviceaccount.com
 
 ENABLE_DATABASE=false
 DB_TYPE=cloudsql
@@ -51,6 +54,8 @@ CORS_ALLOWED_ORIGINS=
 
 When running on GCP with workload identity, leave `GOOGLE_APPLICATION_CREDENTIALS` empty.
 Database settings are only required when `ENABLE_DATABASE=true`.
+`SIGNED_URL_SERVICE_ACCOUNT_EMAIL` must be set for `/api/v1/assets/{id}/urls`; the runtime service account needs permission to sign blobs for that service account and create/read objects in the media bucket.
+`ALLOWED_IAP_EMAILS` is the single-owner allowlist used when validating IAP signed headers.
 
 ## API
 
@@ -144,6 +149,28 @@ Content-Type: application/json
 ```
 
 Only objects whose listed content type starts with `image/` are read.
+
+### Photo library
+
+```http
+GET /api/v1/auth/session
+GET /api/v1/assets?limit=100&cursor={optional-cursor}&albumId={optional-album-id}
+POST /api/v1/assets/upload
+GET /api/v1/assets/{id}
+GET /api/v1/assets/{id}/urls
+PATCH /api/v1/assets/{id}/favorite
+GET /api/v1/albums
+POST /api/v1/albums
+PATCH /api/v1/albums/{id}
+DELETE /api/v1/albums/{id}
+POST /api/v1/albums/{id}/assets
+DELETE /api/v1/albums/{id}/assets
+GET /api/v1/jobs
+GET /api/v1/status
+```
+
+Photo-library routes require valid IAP identity whose email is present in `ALLOWED_IAP_EMAILS`.
+Media bytes remain private in GCS; the browser receives short-lived signed URLs only after the backend validates the requester.
 
 ## Development
 
