@@ -49,6 +49,14 @@ type PhotoAsset struct {
 	Favorite          bool               `json:"favorite"`
 }
 
+type PhotoFolder struct {
+	ID        string             `json:"id"`
+	Name      string             `json:"name"`
+	ParentID  *string            `json:"parent_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type PhotoJob struct {
 	ID        string             `json:"id"`
 	Type      string             `json:"type"`

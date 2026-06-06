@@ -18,6 +18,7 @@ A Go Cloud Run service that exposes GCS-backed storage APIs and first-party phot
 
 ```text
 cmd/server/                  # Application entry point
+internal/domain/photo/       # Photo-library domain objects and repository contracts
 internal/auth/               # IAP signed JWT validation
 internal/config/             # Environment configuration
 internal/httpapi/            # HTTP routes, handlers, CORS

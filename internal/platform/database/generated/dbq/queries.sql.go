@@ -105,6 +105,36 @@ func (q *Queries) CreatePhotoAsset(ctx context.Context, arg CreatePhotoAssetPara
 	return err
 }
 
+const createPhotoFolder = `-- name: CreatePhotoFolder :exec
+INSERT INTO photo_folders (
+    id,
+    name,
+    parent_id,
+    created_at,
+    updated_at
+)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type CreatePhotoFolderParams struct {
+	ID        string             `json:"id"`
+	Name      string             `json:"name"`
+	ParentID  *string            `json:"parent_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) CreatePhotoFolder(ctx context.Context, arg CreatePhotoFolderParams) error {
+	_, err := q.db.Exec(ctx, createPhotoFolder,
+		arg.ID,
+		arg.Name,
+		arg.ParentID,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	return err
+}
+
 const createPhotoJob = `-- name: CreatePhotoJob :exec
 INSERT INTO photo_jobs (
     id,
@@ -157,6 +187,19 @@ func (q *Queries) DeletePhotoAlbum(ctx context.Context, id string) (int64, error
 	return result.RowsAffected(), nil
 }
 
+const deletePhotoFolder = `-- name: DeletePhotoFolder :execrows
+DELETE FROM photo_folders
+WHERE id = $1
+`
+
+func (q *Queries) DeletePhotoFolder(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePhotoFolder, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getPhotoAsset = `-- name: GetPhotoAsset :one
 SELECT
     id,
@@ -187,6 +230,30 @@ func (q *Queries) GetPhotoAsset(ctx context.Context, id string) (PhotoAsset, err
 		&i.UploadedAt,
 		&i.Metadata,
 		&i.Favorite,
+	)
+	return i, err
+}
+
+const getPhotoFolder = `-- name: GetPhotoFolder :one
+SELECT
+    id,
+    name,
+    parent_id,
+    created_at,
+    updated_at
+FROM photo_folders
+WHERE id = $1
+`
+
+func (q *Queries) GetPhotoFolder(ctx context.Context, id string) (PhotoFolder, error) {
+	row := q.db.QueryRow(ctx, getPhotoFolder, id)
+	var i PhotoFolder
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.ParentID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -291,6 +358,43 @@ func (q *Queries) ListPhotoAssets(ctx context.Context, arg ListPhotoAssetsParams
 			&i.UploadedAt,
 			&i.Metadata,
 			&i.Favorite,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPhotoFolders = `-- name: ListPhotoFolders :many
+SELECT
+    id,
+    name,
+    parent_id,
+    created_at,
+    updated_at
+FROM photo_folders
+ORDER BY created_at ASC, name ASC
+`
+
+func (q *Queries) ListPhotoFolders(ctx context.Context) ([]PhotoFolder, error) {
+	rows, err := q.db.Query(ctx, listPhotoFolders)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PhotoFolder
+	for rows.Next() {
+		var i PhotoFolder
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.ParentID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -423,6 +527,35 @@ func (q *Queries) UpdatePhotoAlbum(ctx context.Context, arg UpdatePhotoAlbumPara
 		arg.ID,
 		arg.Name,
 		arg.CoverEmoji,
+		arg.UpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updatePhotoFolder = `-- name: UpdatePhotoFolder :execrows
+UPDATE photo_folders
+SET
+    name = $2,
+    parent_id = $3,
+    updated_at = $4
+WHERE id = $1
+`
+
+type UpdatePhotoFolderParams struct {
+	ID        string             `json:"id"`
+	Name      string             `json:"name"`
+	ParentID  *string            `json:"parent_id"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
+func (q *Queries) UpdatePhotoFolder(ctx context.Context, arg UpdatePhotoFolderParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updatePhotoFolder,
+		arg.ID,
+		arg.Name,
+		arg.ParentID,
 		arg.UpdatedAt,
 	)
 	if err != nil {

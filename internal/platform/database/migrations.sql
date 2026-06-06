@@ -59,6 +59,16 @@ CREATE INDEX IF NOT EXISTS idx_photo_assets_media_type ON photo_assets(media_typ
 CREATE INDEX IF NOT EXISTS idx_photo_assets_favorite ON photo_assets(favorite);
 CREATE INDEX IF NOT EXISTS idx_photo_assets_metadata ON photo_assets USING GIN(metadata);
 
+CREATE TABLE IF NOT EXISTS photo_folders (
+    id VARCHAR(255) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    parent_id VARCHAR(255) REFERENCES photo_folders(id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_photo_folders_parent_id ON photo_folders(parent_id);
+
 CREATE TABLE IF NOT EXISTS photo_albums (
     id VARCHAR(255) PRIMARY KEY,
     name VARCHAR(255) NOT NULL,

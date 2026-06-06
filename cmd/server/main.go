@@ -76,7 +76,10 @@ func main() {
 	}()
 
 	// Initialize dependencies after the server is listening
-	var photoStore database.PhotoStore
+	var assetRepo *database.PostgresAssetRepository
+	var albumRepo *database.PostgresAlbumRepository
+	var jobRepo *database.PostgresJobRepository
+	var photoHealth *database.PostgresHealthChecker
 	if cfg.Database.Enabled {
 		dbPool, err := initializeDatabaseWithRetry(ctx, cfg.Database)
 		if err != nil {
@@ -88,7 +91,10 @@ func main() {
 			log.Fatalf("Failed to run database migrations: %v", err)
 		}
 
-		photoStore = database.NewPostgresPhotoStore(dbPool)
+		assetRepo = database.NewPostgresAssetRepository(dbPool)
+		albumRepo = database.NewPostgresAlbumRepository(dbPool)
+		jobRepo = database.NewPostgresJobRepository(dbPool)
+		photoHealth = database.NewPostgresHealthChecker(dbPool)
 	} else {
 		log.Println("Database disabled; skipping database initialization")
 	}
@@ -102,8 +108,8 @@ func main() {
 	storageHandler := httpapi.NewStorageHandler(store)
 	storageHandler.SetupRoutes(mux)
 
-	if photoStore != nil {
-		photoHandler := httpapi.NewPhotoHandler(photoStore, store)
+	if assetRepo != nil && albumRepo != nil && jobRepo != nil && photoHealth != nil {
+		photoHandler := httpapi.NewPhotoHandler(assetRepo, albumRepo, jobRepo, photoHealth, store)
 		photoHandler.SetupRoutes(mux)
 	} else {
 		log.Println("Photo library API disabled; database is required")

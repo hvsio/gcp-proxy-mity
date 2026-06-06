@@ -77,6 +77,48 @@ INSERT INTO photo_albums (
 )
 VALUES ($1, $2, $3, $4, $5);
 
+-- name: CreatePhotoFolder :exec
+INSERT INTO photo_folders (
+    id,
+    name,
+    parent_id,
+    created_at,
+    updated_at
+)
+VALUES ($1, $2, $3, $4, $5);
+
+-- name: GetPhotoFolder :one
+SELECT
+    id,
+    name,
+    parent_id,
+    created_at,
+    updated_at
+FROM photo_folders
+WHERE id = $1;
+
+-- name: ListPhotoFolders :many
+SELECT
+    id,
+    name,
+    parent_id,
+    created_at,
+    updated_at
+FROM photo_folders
+ORDER BY created_at ASC, name ASC;
+
+-- name: UpdatePhotoFolder :execrows
+UPDATE photo_folders
+SET
+    name = $2,
+    parent_id = $3,
+    updated_at = $4
+WHERE id = $1;
+
+-- name: DeletePhotoFolder :execrows
+DELETE FROM photo_folders
+WHERE id = $1;
+
 -- name: ListPhotoAlbums :many
 SELECT
     a.id,

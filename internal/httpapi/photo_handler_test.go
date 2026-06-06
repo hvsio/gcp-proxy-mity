@@ -11,45 +11,45 @@ import (
 	"testing"
 	"time"
 
-	"gcp-proxy-mity/internal/platform/database"
+	"gcp-proxy-mity/internal/domain/photo"
 	"gcp-proxy-mity/internal/storage"
 )
 
 type fakePhotoRepo struct {
-	assets map[string]*database.Asset
-	albums map[string]*database.Album
-	jobs   []*database.Job
+	assets map[string]*photo.Asset
+	albums map[string]*photo.Album
+	jobs   []*photo.Job
 }
 
 func newFakePhotoRepo() *fakePhotoRepo {
 	return &fakePhotoRepo{
-		assets: map[string]*database.Asset{},
-		albums: map[string]*database.Album{},
+		assets: map[string]*photo.Asset{},
+		albums: map[string]*photo.Album{},
 	}
 }
 
-func (r *fakePhotoRepo) CreateAsset(ctx context.Context, asset *database.Asset) error {
+func (r *fakePhotoRepo) CreateAsset(ctx context.Context, asset *photo.Asset) error {
 	r.assets[asset.ID] = asset
 	return nil
 }
 
-func (r *fakePhotoRepo) GetAsset(ctx context.Context, id string) (*database.Asset, error) {
+func (r *fakePhotoRepo) GetAsset(ctx context.Context, id string) (*photo.Asset, error) {
 	asset := r.assets[id]
 	if asset == nil {
-		return nil, database.ErrNotFound
+		return nil, photo.ErrNotFound
 	}
 	return asset, nil
 }
 
-func (r *fakePhotoRepo) ListAssets(ctx context.Context, limit int, cursor string, albumID string) (*database.AssetPage, error) {
-	items := make([]*database.Asset, 0, len(r.assets))
+func (r *fakePhotoRepo) ListAssets(ctx context.Context, limit int, cursor string, albumID string) (*photo.AssetPage, error) {
+	items := make([]*photo.Asset, 0, len(r.assets))
 	for _, asset := range r.assets {
 		items = append(items, asset)
 	}
-	return &database.AssetPage{Items: items, HasMore: false}, nil
+	return &photo.AssetPage{Items: items, HasMore: false}, nil
 }
 
-func (r *fakePhotoRepo) SetAssetFavorite(ctx context.Context, id string, favorite bool) (*database.Asset, error) {
+func (r *fakePhotoRepo) SetAssetFavorite(ctx context.Context, id string, favorite bool) (*photo.Asset, error) {
 	asset, err := r.GetAsset(ctx, id)
 	if err != nil {
 		return nil, err
@@ -58,22 +58,22 @@ func (r *fakePhotoRepo) SetAssetFavorite(ctx context.Context, id string, favorit
 	return asset, nil
 }
 
-func (r *fakePhotoRepo) CreateAlbum(ctx context.Context, album *database.Album) error {
+func (r *fakePhotoRepo) CreateAlbum(ctx context.Context, album *photo.Album) error {
 	r.albums[album.ID] = album
 	return nil
 }
 
-func (r *fakePhotoRepo) ListAlbums(ctx context.Context) ([]*database.Album, error) {
-	albums := make([]*database.Album, 0, len(r.albums))
+func (r *fakePhotoRepo) ListAlbums(ctx context.Context) ([]*photo.Album, error) {
+	albums := make([]*photo.Album, 0, len(r.albums))
 	for _, album := range r.albums {
 		albums = append(albums, album)
 	}
 	return albums, nil
 }
 
-func (r *fakePhotoRepo) UpdateAlbum(ctx context.Context, album *database.Album) error {
+func (r *fakePhotoRepo) UpdateAlbum(ctx context.Context, album *photo.Album) error {
 	if r.albums[album.ID] == nil {
-		return database.ErrNotFound
+		return photo.ErrNotFound
 	}
 	r.albums[album.ID].Name = album.Name
 	r.albums[album.ID].CoverEmoji = album.CoverEmoji
@@ -82,7 +82,7 @@ func (r *fakePhotoRepo) UpdateAlbum(ctx context.Context, album *database.Album) 
 
 func (r *fakePhotoRepo) DeleteAlbum(ctx context.Context, id string) error {
 	if r.albums[id] == nil {
-		return database.ErrNotFound
+		return photo.ErrNotFound
 	}
 	delete(r.albums, id)
 	return nil
@@ -96,12 +96,12 @@ func (r *fakePhotoRepo) RemoveAssetsFromAlbum(ctx context.Context, albumID strin
 	return nil
 }
 
-func (r *fakePhotoRepo) CreateJob(ctx context.Context, job *database.Job) error {
+func (r *fakePhotoRepo) CreateJob(ctx context.Context, job *photo.Job) error {
 	r.jobs = append(r.jobs, job)
 	return nil
 }
 
-func (r *fakePhotoRepo) ListJobs(ctx context.Context, limit int) ([]*database.Job, error) {
+func (r *fakePhotoRepo) ListJobs(ctx context.Context, limit int) ([]*photo.Job, error) {
 	return r.jobs, nil
 }
 
@@ -109,7 +109,7 @@ func (r *fakePhotoRepo) HealthCheck(ctx context.Context) error { return nil }
 
 func TestUploadAssetsStoresObjectCreatesAssetAndQueuesJob(t *testing.T) {
 	repo := newFakePhotoRepo()
-	handler := NewPhotoHandler(repo, fakeStore{})
+	handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
 	mux := http.NewServeMux()
 	handler.SetupRoutes(mux)
 
@@ -150,7 +150,7 @@ func TestUploadAssetsStoresObjectCreatesAssetAndQueuesJob(t *testing.T) {
 func TestAssetURLsReturnSignedOriginalAndPreviewURLs(t *testing.T) {
 	previewKey := "previews/a.jpg"
 	repo := newFakePhotoRepo()
-	repo.assets["asset-1"] = &database.Asset{
+	repo.assets["asset-1"] = &photo.Asset{
 		ID:                "asset-1",
 		Filename:          "a.heic",
 		Type:              "photo",
@@ -161,7 +161,7 @@ func TestAssetURLsReturnSignedOriginalAndPreviewURLs(t *testing.T) {
 		UploadedAt:        time.Now(),
 		Metadata:          map[string]any{},
 	}
-	handler := NewPhotoHandler(repo, fakeStore{})
+	handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
 	mux := http.NewServeMux()
 	handler.SetupRoutes(mux)
 
@@ -184,8 +184,8 @@ func TestAssetURLsReturnSignedOriginalAndPreviewURLs(t *testing.T) {
 
 func TestFavoriteEndpointUpdatesAsset(t *testing.T) {
 	repo := newFakePhotoRepo()
-	repo.assets["asset-1"] = &database.Asset{ID: "asset-1", Metadata: map[string]any{}}
-	handler := NewPhotoHandler(repo, fakeStore{})
+	repo.assets["asset-1"] = &photo.Asset{ID: "asset-1", Metadata: map[string]any{}}
+	handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
 	mux := http.NewServeMux()
 	handler.SetupRoutes(mux)
 
@@ -204,8 +204,8 @@ func TestFavoriteEndpointUpdatesAsset(t *testing.T) {
 
 func TestPhotoStoreErrorsMapToNotFound(t *testing.T) {
 	repo := newFakePhotoRepo()
-	repo.assets["asset-1"] = &database.Asset{ID: "asset-1", OriginalObjectKey: "missing", Metadata: map[string]any{}}
-	handler := NewPhotoHandler(repo, fakeStore{errs: map[string]error{"missing": storage.ErrNotFound}})
+	repo.assets["asset-1"] = &photo.Asset{ID: "asset-1", OriginalObjectKey: "missing", Metadata: map[string]any{}}
+	handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{errs: map[string]error{"missing": storage.ErrNotFound}})
 	mux := http.NewServeMux()
 	handler.SetupRoutes(mux)
 

@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode"
 
-	"gcp-proxy-mity/internal/platform/database"
+	"gcp-proxy-mity/internal/domain/photo"
 	"gcp-proxy-mity/internal/storage"
 
 	"github.com/google/uuid"
@@ -23,12 +23,27 @@ const (
 )
 
 type PhotoHandler struct {
-	repo  database.PhotoStore
-	store storage.Store
+	assets photo.AssetRepository
+	albums photo.AlbumRepository
+	jobs   photo.JobRepository
+	health photo.HealthChecker
+	store  storage.Store
 }
 
-func NewPhotoHandler(repo database.PhotoStore, store storage.Store) *PhotoHandler {
-	return &PhotoHandler{repo: repo, store: store}
+func NewPhotoHandler(
+	assets photo.AssetRepository,
+	albums photo.AlbumRepository,
+	jobs photo.JobRepository,
+	health photo.HealthChecker,
+	store storage.Store,
+) *PhotoHandler {
+	return &PhotoHandler{
+		assets: assets,
+		albums: albums,
+		jobs:   jobs,
+		health: health,
+		store:  store,
+	}
 }
 
 func (h *PhotoHandler) SetupRoutes(mux *http.ServeMux) {
@@ -59,7 +74,7 @@ func (h *PhotoHandler) Assets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := queryInt(r, "limit", defaultAssetPageSize)
-	page, err := h.repo.ListAssets(r.Context(), limit, r.URL.Query().Get("cursor"), r.URL.Query().Get("albumId"))
+	page, err := h.assets.ListAssets(r.Context(), limit, r.URL.Query().Get("cursor"), r.URL.Query().Get("albumId"))
 	if err != nil {
 		writePhotoError(w, err)
 		return
@@ -89,7 +104,7 @@ func (h *PhotoHandler) UploadAssets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	created := make([]*database.Asset, 0, len(files))
+	created := make([]*photo.Asset, 0, len(files))
 	for _, header := range files {
 		file, err := header.Open()
 		if err != nil {
@@ -122,7 +137,7 @@ func (h *PhotoHandler) UploadAssets(w http.ResponseWriter, r *http.Request) {
 		}
 
 		now := time.Now().UTC()
-		asset := &database.Asset{
+		asset := &photo.Asset{
 			ID:                assetID,
 			Filename:          header.Filename,
 			Type:              mediaType,
@@ -135,13 +150,13 @@ func (h *PhotoHandler) UploadAssets(w http.ResponseWriter, r *http.Request) {
 			},
 			Favorite: false,
 		}
-		if err := h.repo.CreateAsset(r.Context(), asset); err != nil {
+		if err := h.assets.CreateAsset(r.Context(), asset); err != nil {
 			writePhotoError(w, err)
 			return
 		}
 
 		jobID := uuid.NewString()
-		job := &database.Job{
+		job := &photo.Job{
 			ID:        jobID,
 			Type:      "metadata_and_previews",
 			AssetID:   &assetID,
@@ -149,7 +164,7 @@ func (h *PhotoHandler) UploadAssets(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
-		if err := h.repo.CreateJob(r.Context(), job); err != nil {
+		if err := h.jobs.CreateJob(r.Context(), job); err != nil {
 			writePhotoError(w, err)
 			return
 		}
@@ -169,7 +184,7 @@ func (h *PhotoHandler) AssetByID(w http.ResponseWriter, r *http.Request) {
 	assetID := parts[0]
 
 	if len(parts) == 1 && r.Method == http.MethodGet {
-		asset, err := h.repo.GetAsset(r.Context(), assetID)
+		asset, err := h.assets.GetAsset(r.Context(), assetID)
 		if err != nil {
 			writePhotoError(w, err)
 			return
@@ -186,7 +201,7 @@ func (h *PhotoHandler) AssetByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		asset, err := h.repo.SetAssetFavorite(r.Context(), assetID, body.Favorite)
+		asset, err := h.assets.SetAssetFavorite(r.Context(), assetID, body.Favorite)
 		if err != nil {
 			writePhotoError(w, err)
 			return
@@ -196,7 +211,7 @@ func (h *PhotoHandler) AssetByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(parts) == 2 && parts[1] == "urls" && r.Method == http.MethodGet {
-		asset, err := h.repo.GetAsset(r.Context(), assetID)
+		asset, err := h.assets.GetAsset(r.Context(), assetID)
 		if err != nil {
 			writePhotoError(w, err)
 			return
@@ -225,7 +240,7 @@ func (h *PhotoHandler) AssetByID(w http.ResponseWriter, r *http.Request) {
 func (h *PhotoHandler) Albums(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		albums, err := h.repo.ListAlbums(r.Context())
+		albums, err := h.albums.ListAlbums(r.Context())
 		if err != nil {
 			writePhotoError(w, err)
 			return
@@ -249,8 +264,8 @@ func (h *PhotoHandler) Albums(w http.ResponseWriter, r *http.Request) {
 			body.CoverEmoji = "📷"
 		}
 		now := time.Now().UTC()
-		album := &database.Album{ID: uuid.NewString(), Name: body.Name, CoverEmoji: body.CoverEmoji, CreatedAt: now, UpdatedAt: now}
-		if err := h.repo.CreateAlbum(r.Context(), album); err != nil {
+		album := &photo.Album{ID: uuid.NewString(), Name: body.Name, CoverEmoji: body.CoverEmoji, CreatedAt: now, UpdatedAt: now}
+		if err := h.albums.CreateAlbum(r.Context(), album); err != nil {
 			writePhotoError(w, err)
 			return
 		}
@@ -280,7 +295,7 @@ func (h *PhotoHandler) AlbumByID(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
 				return
 			}
-			album := &database.Album{ID: albumID, Name: strings.TrimSpace(body.Name), CoverEmoji: body.CoverEmoji}
+			album := &photo.Album{ID: albumID, Name: strings.TrimSpace(body.Name), CoverEmoji: body.CoverEmoji}
 			if album.Name == "" {
 				http.Error(w, "Album name is required", http.StatusBadRequest)
 				return
@@ -288,13 +303,13 @@ func (h *PhotoHandler) AlbumByID(w http.ResponseWriter, r *http.Request) {
 			if album.CoverEmoji == "" {
 				album.CoverEmoji = "📷"
 			}
-			if err := h.repo.UpdateAlbum(r.Context(), album); err != nil {
+			if err := h.albums.UpdateAlbum(r.Context(), album); err != nil {
 				writePhotoError(w, err)
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
 		case http.MethodDelete:
-			if err := h.repo.DeleteAlbum(r.Context(), albumID); err != nil {
+			if err := h.albums.DeleteAlbum(r.Context(), albumID); err != nil {
 				writePhotoError(w, err)
 				return
 			}
@@ -315,13 +330,13 @@ func (h *PhotoHandler) AlbumByID(w http.ResponseWriter, r *http.Request) {
 		}
 		switch r.Method {
 		case http.MethodPost:
-			if err := h.repo.AddAssetsToAlbum(r.Context(), albumID, body.AssetIDs); err != nil {
+			if err := h.albums.AddAssetsToAlbum(r.Context(), albumID, body.AssetIDs); err != nil {
 				writePhotoError(w, err)
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
 		case http.MethodDelete:
-			if err := h.repo.RemoveAssetsFromAlbum(r.Context(), albumID, body.AssetIDs); err != nil {
+			if err := h.albums.RemoveAssetsFromAlbum(r.Context(), albumID, body.AssetIDs); err != nil {
 				writePhotoError(w, err)
 				return
 			}
@@ -340,7 +355,7 @@ func (h *PhotoHandler) Jobs(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	jobs, err := h.repo.ListJobs(r.Context(), queryInt(r, "limit", 50))
+	jobs, err := h.jobs.ListJobs(r.Context(), queryInt(r, "limit", 50))
 	if err != nil {
 		writePhotoError(w, err)
 		return
@@ -354,7 +369,7 @@ func (h *PhotoHandler) Status(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := map[string]any{"healthy": true, "database": "ok"}
-	if err := h.repo.HealthCheck(r.Context()); err != nil {
+	if err := h.health.HealthCheck(r.Context()); err != nil {
 		status["healthy"] = false
 		status["database"] = err.Error()
 		writeJSON(w, http.StatusServiceUnavailable, status)
@@ -365,7 +380,7 @@ func (h *PhotoHandler) Status(w http.ResponseWriter, r *http.Request) {
 
 func writePhotoError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, database.ErrNotFound), errors.Is(err, storage.ErrNotFound):
+	case errors.Is(err, photo.ErrNotFound), errors.Is(err, storage.ErrNotFound):
 		http.Error(w, "Not found", http.StatusNotFound)
 	default:
 		http.Error(w, err.Error(), http.StatusInternalServerError)
