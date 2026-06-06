@@ -50,17 +50,24 @@ func main() {
 	if err != nil {
 		log.Fatalf("IAP validator: %v", err)
 	}
+	googleValidator, err := auth.NewGoogleIDTokenValidator(cfg)
+	if err != nil {
+		log.Fatalf("Google ID token validator: %v", err)
+	}
 	if iapValidator != nil {
 		log.Println("IAP JWT validation enabled; backend will reject requests without valid X-Goog-IAP-JWT-Assertion")
 	}
+	if googleValidator != nil {
+		log.Println("Google ID token validation enabled; backend will reject browser requests without an allowed owner token")
+	}
 
-	iapHandler := auth.WrapWithIAP(iapValidator, mux, []string{"/health", "/ready"})
+	authHandler := auth.WrapWithAuth(iapValidator, googleValidator, mux, []string{"/health", "/ready"})
 
-	var rootHandler http.Handler = iapHandler
+	var rootHandler http.Handler = authHandler
 	if len(cfg.CORS.AllowedOrigins) > 0 {
 		rootHandler = httpapi.CORS(httpapi.CORSConfig{
 			AllowedOrigins: cfg.CORS.AllowedOrigins,
-		})(iapHandler)
+		})(authHandler)
 	}
 
 	server := &http.Server{
@@ -76,6 +83,7 @@ func main() {
 	}()
 
 	// Initialize dependencies after the server is listening
+	var dbService *database.PostgresService
 	if cfg.Database.Enabled {
 		dbPool, err := initializeDatabaseWithRetry(ctx, cfg.Database)
 		if err != nil {
@@ -87,12 +95,12 @@ func main() {
 			log.Fatalf("Failed to run database migrations: %v", err)
 		}
 
-		_ = database.NewPostgresService(dbPool)
+		dbService = database.NewPostgresService(dbPool)
 	} else {
 		log.Println("Database disabled; skipping database initialization")
 	}
 
-	store, err := storage.NewGCSStore(ctx, cfg.Storage.GCSBucketName, cfg.Storage.GoogleCredentials)
+	store, err := storage.NewGCSStore(ctx, cfg.Storage.GCSBucketName, cfg.Storage.GoogleCredentials, cfg.Storage.SignedURLServiceAccountEmail)
 	if err != nil {
 		log.Fatalf("Failed to create GCS client: %v", err)
 	}
@@ -100,6 +108,13 @@ func main() {
 
 	storageHandler := httpapi.NewStorageHandler(store)
 	storageHandler.SetupRoutes(mux)
+
+	if dbService != nil {
+		photoHandler := httpapi.NewPhotoHandler(dbService, store)
+		photoHandler.SetupRoutes(mux)
+	} else {
+		log.Println("Photo library API disabled; database is required")
+	}
 
 	ready.Store(true)
 	log.Println("All dependencies initialized, service is ready")

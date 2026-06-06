@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -13,6 +14,234 @@ import (
 // PostgresService implements the DatabaseService interface using PostgreSQL
 type PostgresService struct {
 	pool *pgxpool.Pool
+}
+
+func (p *PostgresService) CreateAsset(ctx context.Context, asset *Asset) error {
+	metadataJSON, err := json.Marshal(asset.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal asset metadata: %w", err)
+	}
+
+	query := `
+		INSERT INTO photo_assets (id, filename, media_type, mime_type, size, original_object_key, preview_object_key, uploaded_at, metadata, favorite)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`
+	_, err = p.pool.Exec(ctx, query,
+		asset.ID, asset.Filename, asset.Type, asset.MimeType, asset.Size,
+		asset.OriginalObjectKey, asset.PreviewObjectKey, asset.UploadedAt, metadataJSON, asset.Favorite)
+	if err != nil {
+		return fmt.Errorf("failed to create asset: %w", err)
+	}
+	return nil
+}
+
+func (p *PostgresService) GetAsset(ctx context.Context, id string) (*Asset, error) {
+	query := `
+		SELECT id, filename, media_type, mime_type, size, original_object_key, preview_object_key, uploaded_at, metadata, favorite
+		FROM photo_assets
+		WHERE id = $1
+	`
+	row := p.pool.QueryRow(ctx, query, id)
+	asset, err := scanAsset(row)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to get asset: %w", err)
+	}
+	return asset, nil
+}
+
+func (p *PostgresService) ListAssets(ctx context.Context, limit int, cursor string, albumID string) (*AssetPage, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	offset, _ := strconv.Atoi(cursor)
+
+	query := `
+		SELECT a.id, a.filename, a.media_type, a.mime_type, a.size, a.original_object_key, a.preview_object_key, a.uploaded_at, a.metadata, a.favorite
+		FROM photo_assets a
+		WHERE ($3 = '' OR EXISTS (
+			SELECT 1 FROM photo_album_assets aa WHERE aa.album_id = $3 AND aa.asset_id = a.id
+		))
+		ORDER BY a.uploaded_at DESC, a.id DESC
+		LIMIT $1 OFFSET $2
+	`
+	rows, err := p.pool.Query(ctx, query, limit+1, offset, albumID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list assets: %w", err)
+	}
+	defer rows.Close()
+
+	assets := make([]*Asset, 0, limit)
+	for rows.Next() {
+		asset, err := scanAsset(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan asset: %w", err)
+		}
+		assets = append(assets, asset)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate assets: %w", err)
+	}
+
+	hasMore := len(assets) > limit
+	if hasMore {
+		assets = assets[:limit]
+	}
+	nextCursor := ""
+	if hasMore {
+		nextCursor = strconv.Itoa(offset + limit)
+	}
+	return &AssetPage{Items: assets, HasMore: hasMore, NextCursor: nextCursor}, nil
+}
+
+func (p *PostgresService) SetAssetFavorite(ctx context.Context, id string, favorite bool) (*Asset, error) {
+	query := `
+		UPDATE photo_assets
+		SET favorite = $2
+		WHERE id = $1
+		RETURNING id, filename, media_type, mime_type, size, original_object_key, preview_object_key, uploaded_at, metadata, favorite
+	`
+	asset, err := scanAsset(p.pool.QueryRow(ctx, query, id, favorite))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to set asset favorite: %w", err)
+	}
+	return asset, nil
+}
+
+func (p *PostgresService) CreateAlbum(ctx context.Context, album *Album) error {
+	query := `INSERT INTO photo_albums (id, name, cover_emoji, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)`
+	_, err := p.pool.Exec(ctx, query, album.ID, album.Name, album.CoverEmoji, album.CreatedAt, album.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to create album: %w", err)
+	}
+	return nil
+}
+
+func (p *PostgresService) ListAlbums(ctx context.Context) ([]*Album, error) {
+	query := `
+		SELECT a.id, a.name, a.cover_emoji, a.created_at, a.updated_at, COUNT(aa.asset_id)::int AS asset_count
+		FROM photo_albums a
+		LEFT JOIN photo_album_assets aa ON aa.album_id = a.id
+		GROUP BY a.id
+		ORDER BY a.created_at ASC
+	`
+	rows, err := p.pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list albums: %w", err)
+	}
+	defer rows.Close()
+
+	albums := make([]*Album, 0)
+	for rows.Next() {
+		var album Album
+		if err := rows.Scan(&album.ID, &album.Name, &album.CoverEmoji, &album.CreatedAt, &album.UpdatedAt, &album.AssetCount); err != nil {
+			return nil, fmt.Errorf("failed to scan album: %w", err)
+		}
+		albums = append(albums, &album)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate albums: %w", err)
+	}
+	return albums, nil
+}
+
+func (p *PostgresService) UpdateAlbum(ctx context.Context, album *Album) error {
+	query := `UPDATE photo_albums SET name = $2, cover_emoji = $3, updated_at = $4 WHERE id = $1`
+	result, err := p.pool.Exec(ctx, query, album.ID, album.Name, album.CoverEmoji, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to update album: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *PostgresService) DeleteAlbum(ctx context.Context, id string) error {
+	result, err := p.pool.Exec(ctx, `DELETE FROM photo_albums WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete album: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (p *PostgresService) AddAssetsToAlbum(ctx context.Context, albumID string, assetIDs []string) error {
+	batch := &pgx.Batch{}
+	for _, assetID := range assetIDs {
+		batch.Queue(`INSERT INTO photo_album_assets (album_id, asset_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, albumID, assetID)
+	}
+	return p.pool.SendBatch(ctx, batch).Close()
+}
+
+func (p *PostgresService) RemoveAssetsFromAlbum(ctx context.Context, albumID string, assetIDs []string) error {
+	batch := &pgx.Batch{}
+	for _, assetID := range assetIDs {
+		batch.Queue(`DELETE FROM photo_album_assets WHERE album_id = $1 AND asset_id = $2`, albumID, assetID)
+	}
+	return p.pool.SendBatch(ctx, batch).Close()
+}
+
+func (p *PostgresService) CreateJob(ctx context.Context, job *Job) error {
+	query := `INSERT INTO photo_jobs (id, type, asset_id, state, attempts, error, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+	_, err := p.pool.Exec(ctx, query, job.ID, job.Type, job.AssetID, job.State, job.Attempts, job.Error, job.CreatedAt, job.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to create job: %w", err)
+	}
+	return nil
+}
+
+func (p *PostgresService) ListJobs(ctx context.Context, limit int) ([]*Job, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	rows, err := p.pool.Query(ctx, `SELECT id, type, asset_id, state, attempts, error, created_at, updated_at FROM photo_jobs ORDER BY created_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list jobs: %w", err)
+	}
+	defer rows.Close()
+
+	jobs := make([]*Job, 0)
+	for rows.Next() {
+		var job Job
+		if err := rows.Scan(&job.ID, &job.Type, &job.AssetID, &job.State, &job.Attempts, &job.Error, &job.CreatedAt, &job.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan job: %w", err)
+		}
+		jobs = append(jobs, &job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate jobs: %w", err)
+	}
+	return jobs, nil
+}
+
+type assetScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAsset(row assetScanner) (*Asset, error) {
+	var asset Asset
+	var metadataJSON []byte
+	if err := row.Scan(
+		&asset.ID, &asset.Filename, &asset.Type, &asset.MimeType, &asset.Size,
+		&asset.OriginalObjectKey, &asset.PreviewObjectKey, &asset.UploadedAt, &metadataJSON, &asset.Favorite,
+	); err != nil {
+		return nil, err
+	}
+	asset.Metadata = map[string]any{}
+	if len(metadataJSON) > 0 {
+		if err := json.Unmarshal(metadataJSON, &asset.Metadata); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal asset metadata: %w", err)
+		}
+	}
+	return &asset, nil
 }
 
 // NewPostgresService creates a new PostgreSQL database service

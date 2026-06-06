@@ -52,6 +52,21 @@ func (s fakeStore) Open(ctx context.Context, path string) (*storage.FileStream, 
 	}, nil
 }
 
+func (s fakeStore) Write(ctx context.Context, path string, contentType string, body io.Reader) (*storage.ObjectMetadata, error) {
+	content, err := io.ReadAll(body)
+	if err != nil {
+		return nil, err
+	}
+	return &storage.ObjectMetadata{Path: path, ContentType: contentType, Size: int64(len(content)), UpdatedAt: time.Now()}, nil
+}
+
+func (s fakeStore) SignedURL(ctx context.Context, path string, method string, expires time.Duration) (string, error) {
+	if err := s.errs[path]; err != nil {
+		return "", err
+	}
+	return "https://signed.example/" + path, nil
+}
+
 func TestListFilesReturnsMetadata(t *testing.T) {
 	updatedAt := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 	handler := NewStorageHandler(fakeStore{

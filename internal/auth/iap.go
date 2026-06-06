@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+	"google.golang.org/api/idtoken"
 )
 
 var errBadJWKS = errors.New("failed to fetch or parse IAP JWKS")
@@ -35,6 +36,11 @@ type IAPValidator struct {
 	jwksExpiry    time.Time
 }
 
+type GoogleIDTokenValidator struct {
+	audience      string
+	allowedEmails map[string]struct{}
+}
+
 func NewIAPValidator(cfg *config.Config) (*IAPValidator, error) {
 	if cfg.IAP.Audience == "" || len(cfg.IAP.AllowedEmails) == 0 {
 		return nil, nil
@@ -48,6 +54,20 @@ func NewIAPValidator(cfg *config.Config) (*IAPValidator, error) {
 		allowedEmails: allowed,
 		jwksURL:       iapJWKSURL,
 		issuer:        iapIssuer,
+	}, nil
+}
+
+func NewGoogleIDTokenValidator(cfg *config.Config) (*GoogleIDTokenValidator, error) {
+	if cfg.IAP.GoogleOAuthClientID == "" || len(cfg.IAP.AllowedEmails) == 0 {
+		return nil, nil
+	}
+	allowed := make(map[string]struct{})
+	for _, e := range cfg.IAP.AllowedEmails {
+		allowed[strings.TrimSpace(strings.ToLower(e))] = struct{}{}
+	}
+	return &GoogleIDTokenValidator{
+		audience:      cfg.IAP.GoogleOAuthClientID,
+		allowedEmails: allowed,
 	}, nil
 }
 
@@ -139,6 +159,25 @@ func (v *IAPValidator) Validate(ctx context.Context, rawJWT string) (email strin
 	return email, nil
 }
 
+func (v *GoogleIDTokenValidator) Validate(ctx context.Context, rawJWT string) (email string, err error) {
+	if v == nil || rawJWT == "" {
+		return "", http.ErrNoCookie
+	}
+	payload, err := idtoken.Validate(ctx, rawJWT, v.audience)
+	if err != nil {
+		return "", err
+	}
+	emailClaim, _ := payload.Claims["email"].(string)
+	email = strings.TrimSpace(strings.ToLower(emailClaim))
+	if email == "" {
+		return "", http.ErrNoCookie
+	}
+	if _, ok := v.allowedEmails[email]; !ok {
+		return "", http.ErrNoCookie
+	}
+	return email, nil
+}
+
 func RequireIAP(validator *IAPValidator, next http.Handler) http.Handler {
 	if validator == nil {
 		return next
@@ -172,5 +211,43 @@ func WrapWithIAP(validator *IAPValidator, next http.Handler, skipPaths []string)
 			return
 		}
 		RequireIAP(validator, next).ServeHTTP(w, r)
+	})
+}
+
+func WrapWithAuth(iapValidator *IAPValidator, googleValidator *GoogleIDTokenValidator, next http.Handler, skipPaths []string) http.Handler {
+	skip := make(map[string]struct{})
+	for _, p := range skipPaths {
+		skip[p] = struct{}{}
+	}
+	if iapValidator == nil && googleValidator == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := skip[r.URL.Path]; ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if iapValidator != nil {
+			if email, err := iapValidator.Validate(r.Context(), r.Header.Get(iapJWTHeader)); err == nil {
+				r.Header.Set("X-Authenticated-Email", email)
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		if googleValidator != nil {
+			raw := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+			if email, err := googleValidator.Validate(r.Context(), raw); err == nil {
+				r.Header.Set("X-Authenticated-Email", email)
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		log.Printf("auth: reject %s %s", r.Method, r.URL.Path)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte("Missing or invalid identity"))
 	})
 }
