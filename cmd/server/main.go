@@ -50,18 +50,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("IAP validator: %v", err)
 	}
-	googleValidator, err := auth.NewGoogleIDTokenValidator(cfg)
-	if err != nil {
-		log.Fatalf("Google ID token validator: %v", err)
-	}
 	if iapValidator != nil {
 		log.Println("IAP JWT validation enabled; backend will reject requests without valid X-Goog-IAP-JWT-Assertion")
 	}
-	if googleValidator != nil {
-		log.Println("Google ID token validation enabled; backend will reject browser requests without an allowed owner token")
-	}
 
-	authHandler := auth.WrapWithAuth(iapValidator, googleValidator, mux, []string{"/health", "/ready"})
+	authHandler := auth.WrapWithIAP(iapValidator, mux, []string{"/health", "/ready"})
 
 	var rootHandler http.Handler = authHandler
 	if len(cfg.CORS.AllowedOrigins) > 0 {
@@ -83,7 +76,7 @@ func main() {
 	}()
 
 	// Initialize dependencies after the server is listening
-	var dbService *database.PostgresService
+	var photoStore database.PhotoStore
 	if cfg.Database.Enabled {
 		dbPool, err := initializeDatabaseWithRetry(ctx, cfg.Database)
 		if err != nil {
@@ -95,7 +88,7 @@ func main() {
 			log.Fatalf("Failed to run database migrations: %v", err)
 		}
 
-		dbService = database.NewPostgresService(dbPool)
+		photoStore = database.NewPostgresPhotoStore(dbPool)
 	} else {
 		log.Println("Database disabled; skipping database initialization")
 	}
@@ -109,8 +102,8 @@ func main() {
 	storageHandler := httpapi.NewStorageHandler(store)
 	storageHandler.SetupRoutes(mux)
 
-	if dbService != nil {
-		photoHandler := httpapi.NewPhotoHandler(dbService, store)
+	if photoStore != nil {
+		photoHandler := httpapi.NewPhotoHandler(photoStore, store)
 		photoHandler.SetupRoutes(mux)
 	} else {
 		log.Println("Photo library API disabled; database is required")

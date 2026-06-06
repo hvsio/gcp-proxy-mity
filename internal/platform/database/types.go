@@ -71,6 +71,38 @@ type Job struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+type AssetRepository interface {
+	CreateAsset(ctx context.Context, asset *Asset) error
+	GetAsset(ctx context.Context, id string) (*Asset, error)
+	ListAssets(ctx context.Context, limit int, cursor string, albumID string) (*AssetPage, error)
+	SetAssetFavorite(ctx context.Context, id string, favorite bool) (*Asset, error)
+}
+
+type AlbumRepository interface {
+	CreateAlbum(ctx context.Context, album *Album) error
+	ListAlbums(ctx context.Context) ([]*Album, error)
+	UpdateAlbum(ctx context.Context, album *Album) error
+	DeleteAlbum(ctx context.Context, id string) error
+	AddAssetsToAlbum(ctx context.Context, albumID string, assetIDs []string) error
+	RemoveAssetsFromAlbum(ctx context.Context, albumID string, assetIDs []string) error
+}
+
+type JobRepository interface {
+	CreateJob(ctx context.Context, job *Job) error
+	ListJobs(ctx context.Context, limit int) ([]*Job, error)
+}
+
+type HealthChecker interface {
+	HealthCheck(ctx context.Context) error
+}
+
+type PhotoStore interface {
+	AssetRepository
+	AlbumRepository
+	JobRepository
+	HealthChecker
+}
+
 type Service interface {
 	CreateMediaMetadata(ctx context.Context, metadata *MediaMetadata) error
 	GetMediaMetadata(ctx context.Context, filePath string, userID string) (*MediaMetadata, error)
@@ -81,18 +113,6 @@ type Service interface {
 	CreateSignedURL(ctx context.Context, record *SignedURLRecord) error
 	GetSignedURL(ctx context.Context, id string) (*SignedURLRecord, error)
 	CleanupExpiredURLs(ctx context.Context) error
-	CreateAsset(ctx context.Context, asset *Asset) error
-	GetAsset(ctx context.Context, id string) (*Asset, error)
-	ListAssets(ctx context.Context, limit int, cursor string, albumID string) (*AssetPage, error)
-	SetAssetFavorite(ctx context.Context, id string, favorite bool) (*Asset, error)
-	CreateAlbum(ctx context.Context, album *Album) error
-	ListAlbums(ctx context.Context) ([]*Album, error)
-	UpdateAlbum(ctx context.Context, album *Album) error
-	DeleteAlbum(ctx context.Context, id string) error
-	AddAssetsToAlbum(ctx context.Context, albumID string, assetIDs []string) error
-	RemoveAssetsFromAlbum(ctx context.Context, albumID string, assetIDs []string) error
-	CreateJob(ctx context.Context, job *Job) error
-	ListJobs(ctx context.Context, limit int) ([]*Job, error)
 	HealthCheck(ctx context.Context) error
 	Close() error
 }

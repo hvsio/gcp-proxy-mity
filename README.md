@@ -10,7 +10,6 @@ A Go Cloud Run service that exposes GCS-backed storage APIs and first-party phot
 - Read multiple files with `POST /api/v1/storage/files/read`.
 - Read all images under a prefix with `POST /api/v1/storage/files/read`.
 - Optional IAP JWT validation for protected deployments.
-- Optional Google ID-token validation for browser clients using the configured single owner allowlist.
 - Optional CORS allowlist.
 - Optional Cloud SQL/Postgres wiring and migrations for metadata features.
 - Photo-library APIs for assets, albums, favorite state, upload, signed media URLs, and background job status.
@@ -19,7 +18,7 @@ A Go Cloud Run service that exposes GCS-backed storage APIs and first-party phot
 
 ```text
 cmd/server/                  # Application entry point
-internal/auth/               # IAP and Google ID-token validation
+internal/auth/               # IAP signed JWT validation
 internal/config/             # Environment configuration
 internal/httpapi/            # HTTP routes, handlers, CORS
 internal/storage/            # Read-only storage abstraction and GCS adapter
@@ -48,7 +47,6 @@ DB_PASSWORD=
 DB_SSL_MODE=disable
 
 IAP_AUDIENCE=
-GOOGLE_OAUTH_CLIENT_ID=
 ALLOWED_IAP_EMAILS=
 CORS_ALLOWED_ORIGINS=
 ```
@@ -56,7 +54,7 @@ CORS_ALLOWED_ORIGINS=
 When running on GCP with workload identity, leave `GOOGLE_APPLICATION_CREDENTIALS` empty.
 Database settings are only required when `ENABLE_DATABASE=true`.
 `SIGNED_URL_SERVICE_ACCOUNT_EMAIL` must be set for `/api/v1/assets/{id}/urls`; the runtime service account needs permission to sign blobs for that service account and create/read objects in the media bucket.
-`ALLOWED_IAP_EMAILS` is reused as the single-owner allowlist for both IAP and browser Google ID-token validation.
+`ALLOWED_IAP_EMAILS` is the single-owner allowlist used when validating IAP signed headers.
 
 ## API
 
@@ -170,7 +168,7 @@ GET /api/v1/jobs
 GET /api/v1/status
 ```
 
-Photo-library routes require either valid IAP identity or a browser Google ID token whose email is present in `ALLOWED_IAP_EMAILS`.
+Photo-library routes require valid IAP identity whose email is present in `ALLOWED_IAP_EMAILS`.
 Media bytes remain private in GCS; the browser receives short-lived signed URLs only after the backend validates the requester.
 
 ## Development

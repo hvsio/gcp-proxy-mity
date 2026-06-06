@@ -37,35 +37,3 @@ func TestWrapWithIAPRejectsUnskippedPaths(t *testing.T) {
 		t.Fatalf("expected unauthorized, got %d", rec.Code)
 	}
 }
-
-func TestWrapWithAuthSkipsConfiguredPaths(t *testing.T) {
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	handler := WrapWithAuth(&IAPValidator{}, nil, next, []string{"/health"})
-
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected skipped path to pass, got %d", rec.Code)
-	}
-}
-
-func TestWrapWithAuthRejectsMissingIdentity(t *testing.T) {
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
-	handler := WrapWithAuth(&IAPValidator{}, nil, next, []string{"/health"})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/assets", nil)
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected unauthorized, got %d", rec.Code)
-	}
-}

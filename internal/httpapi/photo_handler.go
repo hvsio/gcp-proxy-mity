@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,28 +22,12 @@ const (
 	signedURLTTL         = 15 * time.Minute
 )
 
-type PhotoRepository interface {
-	CreateAsset(ctx context.Context, asset *database.Asset) error
-	GetAsset(ctx context.Context, id string) (*database.Asset, error)
-	ListAssets(ctx context.Context, limit int, cursor string, albumID string) (*database.AssetPage, error)
-	SetAssetFavorite(ctx context.Context, id string, favorite bool) (*database.Asset, error)
-	CreateAlbum(ctx context.Context, album *database.Album) error
-	ListAlbums(ctx context.Context) ([]*database.Album, error)
-	UpdateAlbum(ctx context.Context, album *database.Album) error
-	DeleteAlbum(ctx context.Context, id string) error
-	AddAssetsToAlbum(ctx context.Context, albumID string, assetIDs []string) error
-	RemoveAssetsFromAlbum(ctx context.Context, albumID string, assetIDs []string) error
-	CreateJob(ctx context.Context, job *database.Job) error
-	ListJobs(ctx context.Context, limit int) ([]*database.Job, error)
-	HealthCheck(ctx context.Context) error
-}
-
 type PhotoHandler struct {
-	repo  PhotoRepository
+	repo  database.PhotoStore
 	store storage.Store
 }
 
-func NewPhotoHandler(repo PhotoRepository, store storage.Store) *PhotoHandler {
+func NewPhotoHandler(repo database.PhotoStore, store storage.Store) *PhotoHandler {
 	return &PhotoHandler{repo: repo, store: store}
 }
 
@@ -64,7 +47,10 @@ func (h *PhotoHandler) Session(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"authenticated": true})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated": true,
+		"email":         r.Header.Get("X-IAP-Email"),
+	})
 }
 
 func (h *PhotoHandler) Assets(w http.ResponseWriter, r *http.Request) {
