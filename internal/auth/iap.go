@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -16,7 +17,17 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 )
 
-var errBadJWKS = errors.New("failed to fetch or parse IAP JWKS")
+var (
+	errBadJWKS            = errors.New("failed to fetch or parse IAP JWKS")
+	errMissingJWT         = errors.New("missing_iap_jwt")
+	errFetchJWKS          = errors.New("fetch_iap_jwks")
+	errParseJWT           = errors.New("parse_iap_jwt")
+	errReadClaims         = errors.New("read_iap_claims")
+	errValidateClaims     = errors.New("validate_iap_claims")
+	errMissingEmail       = errors.New("missing_iap_email")
+	errEmailNotAllowed    = errors.New("iap_email_not_allowed")
+	errValidatorUnenabled = errors.New("iap_validator_unenabled")
+)
 
 const (
 	iapJWTHeader    = "X-Goog-IAP-JWT-Assertion"
@@ -99,18 +110,21 @@ func (v *IAPValidator) fetchJWKS(ctx context.Context) (*jose.JSONWebKeySet, erro
 }
 
 func (v *IAPValidator) Validate(ctx context.Context, rawJWT string) (email string, err error) {
-	if v == nil || rawJWT == "" {
-		return "", http.ErrNoCookie
+	if v == nil {
+		return "", errValidatorUnenabled
+	}
+	if rawJWT == "" {
+		return "", errMissingJWT
 	}
 
 	keySet, err := v.fetchJWKS(ctx)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v", errFetchJWKS, err)
 	}
 
 	tok, err := jwt.ParseSigned(rawJWT, []jose.SignatureAlgorithm{jose.ES256})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v", errParseJWT, err)
 	}
 
 	var claims jwt.Claims
@@ -118,7 +132,7 @@ func (v *IAPValidator) Validate(ctx context.Context, rawJWT string) (email strin
 		Email string `json:"email"`
 	}
 	if err := tok.Claims(keySet, &claims, &extra); err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v", errReadClaims, err)
 	}
 
 	if err := claims.Validate(jwt.Expected{
@@ -126,17 +140,40 @@ func (v *IAPValidator) Validate(ctx context.Context, rawJWT string) (email strin
 		AnyAudience: jwt.Audience{v.audience},
 		Time:        time.Now(),
 	}); err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v", errValidateClaims, err)
 	}
 
 	email = strings.TrimSpace(strings.ToLower(extra.Email))
 	if email == "" {
-		return "", http.ErrNoCookie
+		return "", errMissingEmail
 	}
 	if _, ok := v.allowedEmails[email]; !ok {
-		return "", http.ErrNoCookie
+		return "", errEmailNotAllowed
 	}
 	return email, nil
+}
+
+func iapRejectReason(err error) string {
+	switch {
+	case errors.Is(err, errMissingJWT):
+		return "missing_jwt"
+	case errors.Is(err, errFetchJWKS):
+		return "fetch_jwks"
+	case errors.Is(err, errParseJWT):
+		return "parse_jwt"
+	case errors.Is(err, errReadClaims):
+		return "read_claims"
+	case errors.Is(err, errValidateClaims):
+		return "validate_claims"
+	case errors.Is(err, errMissingEmail):
+		return "missing_email"
+	case errors.Is(err, errEmailNotAllowed):
+		return "email_not_allowed"
+	case errors.Is(err, errValidatorUnenabled):
+		return "validator_unenabled"
+	default:
+		return "unknown"
+	}
 }
 
 func RequireIAP(validator *IAPValidator, next http.Handler) http.Handler {
@@ -147,8 +184,18 @@ func RequireIAP(validator *IAPValidator, next http.Handler) http.Handler {
 		raw := r.Header.Get(iapJWTHeader)
 		email, err := validator.Validate(r.Context(), raw)
 		if err != nil {
-			log.Printf("iap: reject %s %s: %v", r.Method, r.URL.Path, err)
+			reason := iapRejectReason(err)
+			log.Printf(
+				"iap: reject method=%s path=%s reason=%s jwt_present=%t authenticated_user_email_present=%t error=%v",
+				r.Method,
+				r.URL.Path,
+				reason,
+				raw != "",
+				r.Header.Get("X-Goog-Authenticated-User-Email") != "",
+				err,
+			)
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("X-IAP-Reject-Reason", reason)
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte("Missing or invalid IAP identity"))
 			return
