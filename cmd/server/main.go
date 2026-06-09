@@ -108,6 +108,9 @@ func main() {
 	storageHandler := httpapi.NewStorageHandler(store)
 	storageHandler.SetupRoutes(mux)
 
+	sessionHandler := httpapi.NewPhotoHandler(nil, nil, nil, nil, nil)
+	sessionHandler.SetupSessionRoute(mux)
+
 	if assetRepo != nil && albumRepo != nil && jobRepo != nil && photoHealth != nil {
 		photoHandler := httpapi.NewPhotoHandler(assetRepo, albumRepo, jobRepo, photoHealth, store)
 		photoHandler.SetupRoutes(mux)

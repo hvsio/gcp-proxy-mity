@@ -47,7 +47,6 @@ func NewPhotoHandler(
 }
 
 func (h *PhotoHandler) SetupRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/v1/auth/session", h.Session)
 	mux.HandleFunc("/api/v1/assets/upload", h.UploadAssets)
 	mux.HandleFunc("/api/v1/assets/", h.AssetByID)
 	mux.HandleFunc("/api/v1/assets", h.Assets)
@@ -55,6 +54,10 @@ func (h *PhotoHandler) SetupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/albums", h.Albums)
 	mux.HandleFunc("/api/v1/jobs", h.Jobs)
 	mux.HandleFunc("/api/v1/status", h.Status)
+}
+
+func (h *PhotoHandler) SetupSessionRoute(mux *http.ServeMux) {
+	mux.HandleFunc("/api/v1/auth/session", h.Session)
 }
 
 func (h *PhotoHandler) Session(w http.ResponseWriter, r *http.Request) {

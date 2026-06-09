@@ -147,6 +147,21 @@ func TestSessionReturnsForwardedAuthenticatedUserEmail(t *testing.T) {
 	}
 }
 
+func TestSessionRouteCanBeRegisteredWithoutPhotoRepositories(t *testing.T) {
+	handler := NewPhotoHandler(nil, nil, nil, nil, nil)
+	mux := http.NewServeMux()
+	handler.SetupSessionRoute(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestUploadAssetsStoresObjectCreatesAssetAndQueuesJob(t *testing.T) {
 	repo := newFakePhotoRepo()
 	handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
