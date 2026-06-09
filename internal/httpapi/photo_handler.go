@@ -64,8 +64,18 @@ func (h *PhotoHandler) Session(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authenticated": true,
-		"email":         r.Header.Get("X-IAP-Email"),
+		"email":         sessionEmail(r),
 	})
+}
+
+func sessionEmail(r *http.Request) string {
+	if email := strings.TrimSpace(r.Header.Get("X-IAP-Email")); email != "" {
+		return email
+	}
+	return strings.TrimPrefix(
+		strings.TrimSpace(r.Header.Get("X-Goog-Authenticated-User-Email")),
+		"accounts.google.com:",
+	)
 }
 
 func (h *PhotoHandler) Assets(w http.ResponseWriter, r *http.Request) {

@@ -107,6 +107,46 @@ func (r *fakePhotoRepo) ListJobs(ctx context.Context, limit int) ([]*photo.Job, 
 
 func (r *fakePhotoRepo) HealthCheck(ctx context.Context) error { return nil }
 
+func TestSessionReturnsIAPEmail(t *testing.T) {
+	handler := NewPhotoHandler(newFakePhotoRepo(), nil, nil, nil, fakeStore{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
+	req.Header.Set("X-IAP-Email", "user@example.com")
+	rec := httptest.NewRecorder()
+
+	handler.Session(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["email"] != "user@example.com" {
+		t.Fatalf("expected IAP email, got %q", got["email"])
+	}
+}
+
+func TestSessionReturnsForwardedAuthenticatedUserEmail(t *testing.T) {
+	handler := NewPhotoHandler(newFakePhotoRepo(), nil, nil, nil, fakeStore{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
+	req.Header.Set("X-Goog-Authenticated-User-Email", "accounts.google.com:user@example.com")
+	rec := httptest.NewRecorder()
+
+	handler.Session(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got["email"] != "user@example.com" {
+		t.Fatalf("expected forwarded email without prefix, got %q", got["email"])
+	}
+}
+
 func TestUploadAssetsStoresObjectCreatesAssetAndQueuesJob(t *testing.T) {
 	repo := newFakePhotoRepo()
 	handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
