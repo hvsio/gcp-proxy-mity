@@ -1,4 +1,4 @@
-name: Deploy Infrastructure and App to GCP
+name: Clean Up GCP Resources
 
 on:
   push:
@@ -10,13 +10,11 @@ on:
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   GCP_REGION: ${{ vars.REGION || 'europe-west4' }}
-  SERVICE_NAME: gcp-proxy-mity
   TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'homey-bw58-terraform-state' }}
   TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX || 'gcp-proxy-mity' }}
-  STORAGE_BUCKET_NAME: ${{ vars.STORAGE_BUCKET_NAME || 'aj-cloud' }}
 
 jobs:
-  deploy:
+  cleanup:
     permissions:
       contents: 'read'
       id-token: 'write'
@@ -39,66 +37,25 @@ jobs:
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
 
-      - name: Create Artifact Registry repo (if not exists)
-        run: |
-          gcloud artifacts repositories describe $SERVICE_NAME \
-            --location=$GCP_REGION --project=$PROJECT_ID 2>/dev/null || \
-          gcloud artifacts repositories create $SERVICE_NAME \
-            --repository-format=docker \
-            --location=$GCP_REGION \
-            --project=$PROJECT_ID
-
-      - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker $GCP_REGION-docker.pkg.dev
-
-      - name: Build Docker image
-        run: |
-          docker build -t $GCP_REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME:$GITHUB_SHA .
-          docker tag $GCP_REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME:$GITHUB_SHA \
-            $GCP_REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME:latest
-
-      - name: Push Docker image
-        run: |
-          docker push $GCP_REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME:$GITHUB_SHA
-          docker push $GCP_REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE_NAME/$SERVICE_NAME:latest
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.13.5
 
       - name: Create terraform.tfvars
-        env:
-          ALLOWED_IAP_USER_EMAILS: ${{ vars.ALLOWED_IAP_USER_EMAILS || vars.ALLOWED_IAP_USER_EMAIL || '' }}
-          CORS_ALLOWED_ORIGINS: ${{ vars.CORS_ALLOWED_ORIGINS || '' }}
-          IAP_AUDIENCE: ${{ vars.IAP_AUDIENCE || '' }}
-          ALLOW_PUBLIC_INVOKER: ${{ vars.ALLOW_PUBLIC_INVOKER || 'false' }}
         run: |
           cd terraform
           python3 - <<'PY' > terraform.tfvars
           import json
           import os
 
-          def csv_list(name):
-              return [item.strip() for item in os.environ.get(name, "").split(",") if item.strip()]
-
           values = {
               "project_id": os.environ["PROJECT_ID"],
               "region": os.environ["GCP_REGION"],
-              "container_image": f'{os.environ["GCP_REGION"]}-docker.pkg.dev/{os.environ["PROJECT_ID"]}/{os.environ["SERVICE_NAME"]}/{os.environ["SERVICE_NAME"]}:{os.environ["GITHUB_SHA"]}',
-              "storage_bucket_name": os.environ["STORAGE_BUCKET_NAME"],
-              "allow_public_invoker": os.environ["ALLOW_PUBLIC_INVOKER"].lower() == "true",
-              "allowed_iap_user_emails": csv_list("ALLOWED_IAP_USER_EMAILS"),
-              "iap_audience": os.environ["IAP_AUDIENCE"],
-              "cors_allowed_origins": csv_list("CORS_ALLOWED_ORIGINS"),
           }
 
           for key, value in values.items():
-              if isinstance(value, bool):
-                  rendered = "true" if value else "false"
-              else:
-                  rendered = json.dumps(value)
-              print(f"{key} = {rendered}")
+              print(f"{key} = {json.dumps(value)}")
           PY
           cat terraform.tfvars
 
@@ -119,9 +76,8 @@ jobs:
           cd terraform
           terraform apply -input=false -auto-approve tfplan
 
-      - name: Get Deployment Info
+      - name: Summarize Cleanup
         run: |
           cd terraform
-          echo "## Deployment Complete! 🚀" >> $GITHUB_STEP_SUMMARY
-          echo "- **Cloud Run URL:** $(terraform output -raw cloud_run_url)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Bucket:** $(terraform output -raw bucket_name)" >> $GITHUB_STEP_SUMMARY
+          echo "## GCP cleanup complete" >> $GITHUB_STEP_SUMMARY
+          echo "- Terraform removed all managed resources declared in state." >> $GITHUB_STEP_SUMMARY
