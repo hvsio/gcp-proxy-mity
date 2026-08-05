@@ -13,6 +13,7 @@ import (
 
 	"gcp-proxy-mity/internal/auth"
 	"gcp-proxy-mity/internal/config"
+	"gcp-proxy-mity/internal/domain/photo"
 	"gcp-proxy-mity/internal/httpapi"
 	"gcp-proxy-mity/internal/platform/database"
 	"gcp-proxy-mity/internal/storage"
@@ -76,25 +77,45 @@ func main() {
 	}()
 
 	// Initialize dependencies after the server is listening
-	var assetRepo *database.PostgresAssetRepository
-	var albumRepo *database.PostgresAlbumRepository
-	var jobRepo *database.PostgresJobRepository
-	var photoHealth *database.PostgresHealthChecker
+	var assetRepo photo.AssetRepository
+	var albumRepo photo.AlbumRepository
+	var jobRepo photo.JobRepository
+	var photoHealth photo.HealthChecker
 	if cfg.Database.Enabled {
-		dbPool, err := initializeDatabaseWithRetry(ctx, cfg.Database)
-		if err != nil {
-			log.Fatalf("Failed to initialize database: %v", err)
-		}
-		defer dbPool.Close()
+		switch cfg.Metadata.Backend {
+		case "firestore":
+			firestoreStore, err := database.NewFirestorePhotoStore(ctx, cfg.Storage.GCPProjectID, cfg.Metadata.FirestoreDatabase)
+			if err != nil {
+				log.Fatalf("Failed to initialize Firestore metadata: %v", err)
+			}
+			defer func() {
+				if err := firestoreStore.Close(); err != nil {
+					log.Printf("Failed to close Firestore client: %v", err)
+				}
+			}()
 
-		if err := database.RunMigrations(ctx, dbPool, database.MigrationsSQL); err != nil {
-			log.Fatalf("Failed to run database migrations: %v", err)
-		}
+			assetRepo = firestoreStore
+			albumRepo = firestoreStore
+			jobRepo = firestoreStore
+			photoHealth = firestoreStore
+		case "postgres":
+			dbPool, err := initializeDatabaseWithRetry(ctx, cfg.Database)
+			if err != nil {
+				log.Fatalf("Failed to initialize database: %v", err)
+			}
+			defer dbPool.Close()
 
-		assetRepo = database.NewPostgresAssetRepository(dbPool)
-		albumRepo = database.NewPostgresAlbumRepository(dbPool)
-		jobRepo = database.NewPostgresJobRepository(dbPool)
-		photoHealth = database.NewPostgresHealthChecker(dbPool)
+			if err := database.RunMigrations(ctx, dbPool, database.MigrationsSQL); err != nil {
+				log.Fatalf("Failed to run database migrations: %v", err)
+			}
+
+			assetRepo = database.NewPostgresAssetRepository(dbPool)
+			albumRepo = database.NewPostgresAlbumRepository(dbPool)
+			jobRepo = database.NewPostgresJobRepository(dbPool)
+			photoHealth = database.NewPostgresHealthChecker(dbPool)
+		default:
+			log.Fatalf("Unsupported metadata backend: %s", cfg.Metadata.Backend)
+		}
 	} else {
 		log.Println("Database disabled; skipping database initialization")
 	}

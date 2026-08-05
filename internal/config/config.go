@@ -14,6 +14,7 @@ import (
 type Config struct {
 	Server   ServerConfig
 	Database DatabaseConfig
+	Metadata MetadataConfig
 	Storage  StorageConfig
 	IAP      IAPConfig
 	CORS     CORSConfig
@@ -53,6 +54,11 @@ type DatabaseConfig struct {
 	DSN                    string // Direct DSN override
 }
 
+type MetadataConfig struct {
+	Backend           string
+	FirestoreDatabase string
+}
+
 // StorageConfig holds storage-related configuration
 type StorageConfig struct {
 	GCPProjectID                 string
@@ -88,6 +94,10 @@ func Load() *Config {
 			MaxLifetime:            getEnvAsDuration("DB_MAX_LIFETIME", "1h"),
 			DSN:                    getEnv("DATABASE_URL", ""), // Override with direct DSN
 		},
+		Metadata: MetadataConfig{
+			Backend:           getEnv("PHOTO_METADATA_BACKEND", "postgres"),
+			FirestoreDatabase: getEnv("FIRESTORE_DATABASE", "(default)"),
+		},
 		Storage: StorageConfig{
 			GCPProjectID:                 getEnv("GCP_PROJECT_ID", ""),
 			GCSBucketName:                getEnv("GCS_BUCKET_NAME", ""),
@@ -117,22 +127,31 @@ func (c *Config) Validate() error {
 		return nil
 	}
 
-	// Database validation
-	if c.Database.Type == "cloudsql" {
-		if c.Database.InstanceConnectionName == "" {
-			return ErrMissingInstanceConnectionName
-		}
-	} else if c.Database.Type == "postgres" && c.Database.DSN == "" {
-		if c.Database.Host == "" {
-			return ErrMissingDBHost
-		}
+	backend := c.Metadata.Backend
+	if backend == "" {
+		backend = "postgres"
 	}
 
-	if c.Database.DatabaseName == "" {
-		return ErrMissingDatabaseName
-	}
-	if c.Database.Username == "" {
-		return ErrMissingDBUsername
+	switch backend {
+	case "postgres":
+		if c.Database.Type == "cloudsql" {
+			if c.Database.InstanceConnectionName == "" {
+				return ErrMissingInstanceConnectionName
+			}
+		} else if c.Database.Type == "postgres" && c.Database.DSN == "" {
+			if c.Database.Host == "" {
+				return ErrMissingDBHost
+			}
+		}
+		if c.Database.DatabaseName == "" {
+			return ErrMissingDatabaseName
+		}
+		if c.Database.Username == "" {
+			return ErrMissingDBUsername
+		}
+	case "firestore":
+	default:
+		return ErrUnsupportedMetadataBackend
 	}
 
 	return nil

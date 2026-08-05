@@ -1,6 +1,7 @@
-name: Clean Up GCP Resources
+name: Deploy Infrastructure and App to GCP
 
 on:
+  pull_request:
   push:
     branches:
       - main
@@ -8,76 +9,221 @@ on:
   workflow_dispatch:
 
 env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   GCP_REGION: ${{ vars.REGION || 'europe-west4' }}
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  SERVICE_NAME: ${{ vars.SERVICE_NAME || 'gcp-proxy-mity' }}
+  STORAGE_BUCKET_NAME: ${{ vars.STORAGE_BUCKET_NAME || '' }}
+  FRONTEND_SERVICE_ACCOUNT_EMAIL: ${{ vars.FRONTEND_SERVICE_ACCOUNT_EMAIL || '' }}
   TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'homey-bw58-terraform-state' }}
   TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX || 'gcp-proxy-mity' }}
 
 jobs:
-  cleanup:
+  validate:
     permissions:
-      contents: 'read'
-      id-token: 'write'
+      contents: read
 
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    env:
+      GOCACHE: /tmp/gcp-proxy-mity-go-build
+      GOMODCACHE: /tmp/gcp-proxy-mity-go-mod
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Google Auth
-        id: auth
-        uses: 'google-github-actions/auth@v3'
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
-          workload_identity_provider: '${{ secrets.WIF_PROVIDER }}'
-          service_account: '${{ secrets.WIF_SERVICE_ACCOUNT }}'
+          go-version-file: go.mod
 
-      - name: Setup Google Cloud CLI
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - name: Go Test
+        run: go test ./...
+
+      - name: Go Vet
+        run: go vet ./...
+
+      - name: Go Build
+        run: go build ./...
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
         with:
           terraform_version: 1.13.5
 
-      - name: Create terraform.tfvars
+      - name: Terraform Fmt
+        run: terraform -chdir=terraform fmt -check
+
+      - name: Terraform Init
+        run: terraform -chdir=terraform init -backend=false -input=false
+
+      - name: Terraform Validate
+        run: terraform -chdir=terraform validate
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: validate
+    permissions:
+      contents: read
+      id-token: write
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: private-alpha
+
+    concurrency:
+      group: private-alpha-backend-deploy
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Require Deploy Inputs
         run: |
-          cd terraform
-          python3 - <<'PY' > terraform.tfvars
+          test -n "$PROJECT_ID"
+          test -n "$STORAGE_BUCKET_NAME"
+
+      - name: Google Auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Setup Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Create Artifact Registry Repository
+        run: |
+          gcloud artifacts repositories describe "$SERVICE_NAME" \
+            --location="$GCP_REGION" \
+            --project="$PROJECT_ID" >/dev/null 2>&1 || \
+          gcloud artifacts repositories create "$SERVICE_NAME" \
+            --repository-format=docker \
+            --location="$GCP_REGION" \
+            --project="$PROJECT_ID"
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
+
+      - name: Build Image
+        env:
+          IMAGE_TAG: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+        run: docker build -t "$IMAGE_TAG" .
+
+      - name: Push Image
+        env:
+          IMAGE_TAG: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+        run: |
+          docker push "$IMAGE_TAG"
+          echo "CONTAINER_IMAGE=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE_TAG")" >> "$GITHUB_ENV"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.13.5
+
+      - name: Create Terraform Tfvars
+        env:
+          ALLOWED_IAP_USER_EMAILS: ${{ vars.ALLOWED_IAP_USER_EMAILS || vars.ALLOWED_IAP_USER_EMAIL || '' }}
+          CORS_ALLOWED_ORIGINS: ${{ vars.CORS_ALLOWED_ORIGINS || '' }}
+          DEPLOYMENT_SERVICE_ACCOUNT_EMAIL: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+          IAP_AUDIENCE: ${{ vars.IAP_AUDIENCE || '' }}
+        run: |
+          python3 - <<'PY' > terraform/terraform.tfvars
           import json
           import os
+
+          def csv_list(name):
+              return [item.strip() for item in os.environ.get(name, "").split(",") if item.strip()]
 
           values = {
               "project_id": os.environ["PROJECT_ID"],
               "region": os.environ["GCP_REGION"],
+              "service_name": os.environ["SERVICE_NAME"],
+              "container_image": os.environ["CONTAINER_IMAGE"],
+              "storage_bucket_name": os.environ["STORAGE_BUCKET_NAME"],
+              "allowed_iap_user_emails": csv_list("ALLOWED_IAP_USER_EMAILS"),
+              "iap_audience": os.environ["IAP_AUDIENCE"],
+              "cors_allowed_origins": csv_list("CORS_ALLOWED_ORIGINS"),
+              "frontend_service_account_email": os.environ.get("FRONTEND_SERVICE_ACCOUNT_EMAIL", "").strip() or f"uni-album-app@{os.environ['PROJECT_ID']}.iam.gserviceaccount.com",
+              "deployment_service_account_email": os.environ["DEPLOYMENT_SERVICE_ACCOUNT_EMAIL"],
           }
 
           for key, value in values.items():
               print(f"{key} = {json.dumps(value)}")
           PY
-          cat terraform.tfvars
 
       - name: Terraform Init
         run: |
-          cd terraform
-          terraform init -input=false \
+          terraform -chdir=terraform init -input=false \
             -backend-config=bucket="$TF_STATE_BUCKET" \
             -backend-config=prefix="$TF_STATE_PREFIX"
 
       - name: Terraform Plan
+        run: terraform -chdir=terraform plan -input=false -out=tfplan
+
+      - name: Block Protected Deletes
         run: |
-          cd terraform
-          terraform plan -input=false -out=tfplan
+          terraform -chdir=terraform show -json tfplan > terraform/tfplan.json
+          PROTECTED_DELETES="$(jq -r '
+            [
+              .resource_changes[]
+              | select(
+                  .address == "google_storage_bucket.media" or
+                  .address == "google_firebase_project.firebase" or
+                  .address == "google_firestore_database.default"
+                )
+              | select(any(.change.actions[]; . == "delete"))
+              | .address
+            ]
+            | .[]?
+          ' terraform/tfplan.json)"
+          if [ -n "$PROTECTED_DELETES" ]; then
+            printf '%s\n' "$PROTECTED_DELETES"
+            exit 1
+          fi
 
       - name: Terraform Apply
-        run: |
-          cd terraform
-          terraform apply -input=false -auto-approve tfplan
+        run: terraform -chdir=terraform apply -input=false tfplan
 
-      - name: Summarize Cleanup
+      - name: Verify Cloud Run
         run: |
-          cd terraform
-          echo "## GCP cleanup complete" >> $GITHUB_STEP_SUMMARY
-          echo "- Terraform removed all managed resources declared in state." >> $GITHUB_STEP_SUMMARY
+          SERVICE_URL="$(terraform -chdir=terraform output -raw cloud_run_url)"
+          for _ in $(seq 1 30); do
+            SERVICE_JSON="$(gcloud run services describe "$SERVICE_NAME" \
+              --region="$GCP_REGION" \
+              --project="$PROJECT_ID" \
+              --format=json)"
+            READY_STATE="$(printf '%s' "$SERVICE_JSON" | jq -r '.status.conditions[] | select(.type == "Ready") | .status')"
+            if [ "$READY_STATE" = "True" ]; then
+              break
+            fi
+            sleep 10
+          done
+          [ "$READY_STATE" = "True" ]
+          READY_REVISION="$(printf '%s' "$SERVICE_JSON" | jq -r '.status.latestReadyRevisionName // empty')"
+          [ -n "$READY_REVISION" ]
+          printf '%s' "$SERVICE_JSON" | jq -e --arg revision "$READY_REVISION" '
+            any(
+              .status.traffic[]?;
+              ((.revisionName // .revision // "") == $revision) and .percent == 100
+            )
+          ' >/dev/null
+          ID_TOKEN="$(gcloud auth print-identity-token --audiences="$SERVICE_URL")"
+          curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer $ID_TOKEN" \
+            "$SERVICE_URL/health"
+          curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer $ID_TOKEN" \
+            "$SERVICE_URL/ready"
+          {
+            echo "## Deployment Complete"
+            echo "- Cloud Run service: $(terraform -chdir=terraform output -raw service_name)"
+            echo "- Cloud Run URL: $SERVICE_URL"
+            echo "- Media bucket: $(terraform -chdir=terraform output -raw bucket_name)"
+            echo "- Firestore database: $(terraform -chdir=terraform output -raw firestore_database_name)"
+          } >> "$GITHUB_STEP_SUMMARY"

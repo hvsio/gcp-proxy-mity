@@ -72,13 +72,7 @@ func (h *PhotoHandler) Session(w http.ResponseWriter, r *http.Request) {
 }
 
 func sessionEmail(r *http.Request) string {
-	if email := strings.TrimSpace(r.Header.Get("X-IAP-Email")); email != "" {
-		return email
-	}
-	return strings.TrimPrefix(
-		strings.TrimSpace(r.Header.Get("X-Goog-Authenticated-User-Email")),
-		"accounts.google.com:",
-	)
+	return strings.TrimSpace(r.Header.Get("X-IAP-Email"))
 }
 
 func (h *PhotoHandler) Assets(w http.ResponseWriter, r *http.Request) {
