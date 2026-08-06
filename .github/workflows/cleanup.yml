@@ -1,0 +1,117 @@
+name: Cleanup Private Alpha Backend
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type DELETE PRIVATE ALPHA BACKEND to continue.
+        required: true
+        type: string
+
+env:
+  GCP_REGION: ${{ vars.REGION || 'europe-west4' }}
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  SERVICE_NAME: ${{ vars.SERVICE_NAME || 'gcp-proxy-mity' }}
+  STORAGE_BUCKET_NAME: ${{ vars.STORAGE_BUCKET_NAME || '' }}
+  FRONTEND_SERVICE_ACCOUNT_EMAIL: ${{ vars.FRONTEND_SERVICE_ACCOUNT_EMAIL || '' }}
+  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET || 'homey-bw58-terraform-state' }}
+  TF_STATE_PREFIX: ${{ vars.TF_STATE_PREFIX || 'gcp-proxy-mity' }}
+
+jobs:
+  cleanup:
+    permissions:
+      contents: read
+      id-token: write
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: private-alpha
+
+    concurrency:
+      group: private-alpha-backend-cleanup
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Confirm Cleanup
+        run: |
+          [ "${{ inputs.confirmation }}" = "DELETE PRIVATE ALPHA BACKEND" ]
+          test -n "$PROJECT_ID"
+          test -n "$STORAGE_BUCKET_NAME"
+
+      - name: Google Auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.13.5
+
+      - name: Create Terraform Tfvars
+        run: |
+          cat <<EOF > terraform/terraform.tfvars
+          project_id = "$PROJECT_ID"
+          region = "$GCP_REGION"
+          service_name = "$SERVICE_NAME"
+          container_image = "europe-west4-docker.pkg.dev/example-proj-12345/gcp-proxy-mity/gcp-proxy-mity@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          storage_bucket_name = "$STORAGE_BUCKET_NAME"
+          allowed_iap_user_emails = []
+          iap_audience = ""
+          cors_allowed_origins = []
+          frontend_service_account_email = "${FRONTEND_SERVICE_ACCOUNT_EMAIL:-uni-album-app@$PROJECT_ID.iam.gserviceaccount.com}"
+          deployment_service_account_email = "${{ secrets.WIF_SERVICE_ACCOUNT }}"
+          EOF
+
+      - name: Terraform Init
+        run: |
+          terraform -chdir=terraform init -input=false \
+            -backend-config=bucket="$TF_STATE_BUCKET" \
+            -backend-config=prefix="$TF_STATE_PREFIX"
+
+      - name: Terraform Destroy Plan
+        run: |
+          terraform -chdir=terraform plan -destroy -input=false -out=tfplan \
+            -target=google_cloud_run_v2_service.backend \
+            -target=google_cloud_run_v2_service_iam_member.deployment_invoker \
+            -target=google_cloud_run_v2_service_iam_member.frontend_invoker \
+            -target=google_project_iam_member.backend_firestore_user \
+            -target=google_service_account_iam_member.backend_token_creator \
+            -target=google_storage_bucket_iam_member.backend_storage_object_creator \
+            -target=google_storage_bucket_iam_member.backend_storage_object_viewer \
+            -target=google_service_account.backend
+
+      - name: Guard Cleanup Target Set
+        run: |
+          terraform -chdir=terraform show -json tfplan > terraform/tfplan.json
+          jq -e '
+            ([
+              .resource_changes[]?
+              | select(any(.change.actions[]; . == "delete"))
+              | .address
+            ] | sort) == ([
+              "google_cloud_run_v2_service.backend",
+              "google_cloud_run_v2_service_iam_member.deployment_invoker",
+              "google_cloud_run_v2_service_iam_member.frontend_invoker",
+              "google_project_iam_member.backend_firestore_user",
+              "google_service_account.backend",
+              "google_service_account_iam_member.backend_token_creator",
+              "google_storage_bucket_iam_member.backend_storage_object_creator",
+              "google_storage_bucket_iam_member.backend_storage_object_viewer"
+            ] | sort)
+          ' terraform/tfplan.json
+
+      - name: Terraform Apply
+        run: terraform -chdir=terraform apply -input=false tfplan
+
+      - name: Summarize Cleanup
+        run: |
+          {
+            echo "## Cleanup Complete"
+            echo "- Removed the Cloud Run backend, runtime service account, and backend IAM bindings."
+            echo "- Retained the media bucket, Firebase project, Firestore database, and enabled APIs."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -127,7 +127,7 @@ func TestSessionReturnsIAPEmail(t *testing.T) {
 	}
 }
 
-func TestSessionReturnsForwardedAuthenticatedUserEmail(t *testing.T) {
+func TestSessionIgnoresUnsignedAuthenticatedUserEmail(t *testing.T) {
 	handler := NewPhotoHandler(newFakePhotoRepo(), nil, nil, nil, fakeStore{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
 	req.Header.Set("X-Goog-Authenticated-User-Email", "accounts.google.com:user@example.com")
@@ -142,8 +142,8 @@ func TestSessionReturnsForwardedAuthenticatedUserEmail(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if got["email"] != "user@example.com" {
-		t.Fatalf("expected forwarded email without prefix, got %q", got["email"])
+	if got["email"] != "" {
+		t.Fatalf("expected unsigned forwarded email to be ignored, got %q", got["email"])
 	}
 }
 
