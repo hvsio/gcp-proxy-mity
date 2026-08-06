@@ -163,6 +163,26 @@ jobs:
             -backend-config=bucket="$TF_STATE_BUCKET" \
             -backend-config=prefix="$TF_STATE_PREFIX"
 
+      - name: Import Existing Media Bucket
+        run: |
+          if terraform -chdir=terraform state show google_storage_bucket.media >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          BUCKET_PROJECT_NUMBER="$(gcloud storage buckets describe "gs://$STORAGE_BUCKET_NAME" \
+            --format='value(projectNumber)' 2>/dev/null || true)"
+          if [ -z "$BUCKET_PROJECT_NUMBER" ]; then
+            exit 0
+          fi
+
+          PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+          if [ "$BUCKET_PROJECT_NUMBER" != "$PROJECT_NUMBER" ]; then
+            echo "::error::Bucket '$STORAGE_BUCKET_NAME' belongs to project number '$BUCKET_PROJECT_NUMBER', expected '$PROJECT_NUMBER'."
+            exit 1
+          fi
+
+          terraform -chdir=terraform import -input=false google_storage_bucket.media "$STORAGE_BUCKET_NAME"
+
       - name: Terraform Plan
         run: terraform -chdir=terraform plan -input=false -out=tfplan
 
@@ -191,6 +211,8 @@ jobs:
         run: terraform -chdir=terraform apply -input=false tfplan
 
       - name: Verify Cloud Run
+        env:
+          DEPLOYMENT_SERVICE_ACCOUNT_EMAIL: ${{ secrets.WIF_SERVICE_ACCOUNT }}
         run: |
           SERVICE_URL="$(terraform -chdir=terraform output -raw cloud_run_url)"
           for _ in $(seq 1 30); do
@@ -213,7 +235,9 @@ jobs:
               ((.revisionName // .revision // "") == $revision) and .percent == 100
             )
           ' >/dev/null
-          ID_TOKEN="$(gcloud auth print-identity-token --audiences="$SERVICE_URL")"
+          ID_TOKEN="$(gcloud auth print-identity-token \
+            --impersonate-service-account="$DEPLOYMENT_SERVICE_ACCOUNT_EMAIL" \
+            --audiences="$SERVICE_URL")"
           curl --fail-with-body --silent --show-error \
             -H "Authorization: Bearer $ID_TOKEN" \
             "$SERVICE_URL/health"
