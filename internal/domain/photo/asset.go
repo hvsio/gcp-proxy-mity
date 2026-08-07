@@ -22,6 +22,12 @@ type Asset struct {
 	Tags              []string       `json:"tags"`
 }
 
+type AssetFilter struct {
+	AlbumID  string `json:"albumId,omitempty"`
+	Favorite bool   `json:"favorite,omitempty"`
+	Tag      string `json:"tag,omitempty"`
+}
+
 type AssetPage struct {
 	Items      []*Asset `json:"items"`
 	NextCursor string   `json:"nextCursor,omitempty"`
@@ -31,7 +37,7 @@ type AssetPage struct {
 type AssetRepository interface {
 	CreateAsset(ctx context.Context, asset *Asset) error
 	GetAsset(ctx context.Context, id string) (*Asset, error)
-	ListAssets(ctx context.Context, limit int, cursor string, albumID string) (*AssetPage, error)
+	ListAssets(ctx context.Context, limit int, cursor string, filter AssetFilter) (*AssetPage, error)
 	SetAssetFavorite(ctx context.Context, id string, favorite bool) (*Asset, error)
 	MutateAssetTags(ctx context.Context, assetIDs []string, add []string, remove []string) error
 }

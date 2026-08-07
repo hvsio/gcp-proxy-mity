@@ -383,19 +383,29 @@ WHERE ($1::text = '' OR EXISTS (
     WHERE aa.album_id = $1::text
       AND aa.asset_id = a.id
 ))
+  AND (NOT $2::bool OR a.favorite = TRUE)
+  AND ($3::text = '' OR a.tags @> jsonb_build_array($3::text))
 ORDER BY a.uploaded_at DESC, a.id DESC
-LIMIT $3::int
-OFFSET $2::int
+LIMIT $5::int
+OFFSET $4::int
 `
 
 type ListPhotoAssetsParams struct {
-	AlbumID     string `json:"album_id"`
-	AssetOffset int32  `json:"asset_offset"`
-	AssetLimit  int32  `json:"asset_limit"`
+	AlbumID      string `json:"album_id"`
+	FavoriteOnly bool   `json:"favorite_only"`
+	Tag          string `json:"tag"`
+	AssetOffset  int32  `json:"asset_offset"`
+	AssetLimit   int32  `json:"asset_limit"`
 }
 
 func (q *Queries) ListPhotoAssets(ctx context.Context, arg ListPhotoAssetsParams) ([]PhotoAsset, error) {
-	rows, err := q.db.Query(ctx, listPhotoAssets, arg.AlbumID, arg.AssetOffset, arg.AssetLimit)
+	rows, err := q.db.Query(ctx, listPhotoAssets,
+		arg.AlbumID,
+		arg.FavoriteOnly,
+		arg.Tag,
+		arg.AssetOffset,
+		arg.AssetLimit,
+	)
 	if err != nil {
 		return nil, err
 	}

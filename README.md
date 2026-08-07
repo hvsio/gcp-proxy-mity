@@ -155,11 +155,12 @@ Only objects whose listed content type starts with `image/` are read.
 
 ```http
 GET /api/v1/auth/session
-GET /api/v1/assets?limit=100&cursor={optional-cursor}&albumId={optional-album-id}
+GET /api/v1/assets?limit=100&cursor={optional-cursor}&albumId={optional-album-id}&favorite=true&tag={optional-exact-tag}
 POST /api/v1/assets/upload
 GET /api/v1/assets/{id}
 GET /api/v1/assets/{id}/urls
 PATCH /api/v1/assets/{id}/favorite
+PATCH /api/v1/assets/tags
 GET /api/v1/albums
 POST /api/v1/albums
 PATCH /api/v1/albums/{id}
@@ -172,7 +173,9 @@ GET /api/v1/status
 
 Photo-library routes require valid IAP identity whose email is present in `ALLOWED_IAP_EMAILS`.
 `GET /api/v1/auth/session` returns only the backend-injected `X-IAP-Email` value after signed assertion validation. Unsigned forwarded headers such as `X-Goog-Authenticated-User-Email` are not trusted.
+`GET /api/v1/assets` supports either no collection filter, `albumId`, `favorite=true`, or a non-empty exact `tag`. Combining filters returns `400`, and `favorite` values other than `true` return `400`. Cursor encoding remains unchanged and results stay ordered by descending `uploadedAt` and `id`.
 `POST` and `DELETE /api/v1/albums/{id}/assets` accept `1..100` non-empty `assetIds`. Duplicate IDs are idempotent, and invalid, empty, blank, or oversized batches are rejected with `400` before any album membership mutation runs.
+`PATCH /api/v1/assets/tags` accepts `assetIds`, `add`, and `remove`, applies one transactional bulk mutation, and rejects overlapping, blank, oversized, or over-limit tag changes before partial writes occur.
 Deleting an album removes the album and its memberships only. Assets and GCS media remain in the library.
 Media bytes remain private in GCS; the browser receives short-lived signed URLs only after the backend validates the requester.
 

@@ -25,7 +25,7 @@ func TestFirestorePhotoStoreListAssetsPaginatesDeterministically(t *testing.T) {
 		}
 	}
 
-	firstPage, err := store.ListAssets(ctx, 2, "", "")
+	firstPage, err := store.ListAssets(ctx, 2, "", photo.AssetFilter{})
 	if err != nil {
 		t.Fatalf("ListAssets() error = %v", err)
 	}
@@ -39,7 +39,7 @@ func TestFirestorePhotoStoreListAssetsPaginatesDeterministically(t *testing.T) {
 		t.Fatalf("expected next cursor")
 	}
 
-	secondPage, err := store.ListAssets(ctx, 2, firstPage.NextCursor, "")
+	secondPage, err := store.ListAssets(ctx, 2, firstPage.NextCursor, photo.AssetFilter{})
 	if err != nil {
 		t.Fatalf("ListAssets() second page error = %v", err)
 	}
@@ -72,7 +72,7 @@ func TestFirestorePhotoStoreListAssetsFiltersByAlbum(t *testing.T) {
 		t.Fatalf("AddAssetsToAlbum() error = %v", err)
 	}
 
-	page, err := store.ListAssets(ctx, 10, "", "album-1")
+	page, err := store.ListAssets(ctx, 10, "", photo.AssetFilter{AlbumID: "album-1"})
 	if err != nil {
 		t.Fatalf("ListAssets() error = %v", err)
 	}
@@ -127,6 +127,82 @@ func TestFirestorePhotoStoreAddAndRemoveAssetsToAlbumUpdateAssetCount(t *testing
 	}
 	if albums[0].AssetCount != 1 {
 		t.Fatalf("asset count after remove = %d", albums[0].AssetCount)
+	}
+}
+
+func TestFirestorePhotoStoreListAssetsFiltersFavoritesAcrossCursorBoundary(t *testing.T) {
+	store := newFirestorePhotoStoreWithDocumentStore(newFakePhotoDocumentStore())
+	ctx := context.Background()
+
+	for _, asset := range []*photo.Asset{
+		{ID: "asset-d", Filename: "d.jpg", Type: "photo", MimeType: "image/jpeg", Size: 4, OriginalObjectKey: "d", UploadedAt: time.Date(2024, 1, 4, 0, 0, 0, 0, time.UTC), Metadata: map[string]any{}, Favorite: false},
+		{ID: "asset-c", Filename: "c.jpg", Type: "photo", MimeType: "image/jpeg", Size: 3, OriginalObjectKey: "c", UploadedAt: time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC), Metadata: map[string]any{}, Favorite: true},
+		{ID: "asset-b", Filename: "b.jpg", Type: "photo", MimeType: "image/jpeg", Size: 2, OriginalObjectKey: "b", UploadedAt: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), Metadata: map[string]any{}, Favorite: true},
+		{ID: "asset-a", Filename: "a.jpg", Type: "photo", MimeType: "image/jpeg", Size: 1, OriginalObjectKey: "a", UploadedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Metadata: map[string]any{}, Favorite: true},
+	} {
+		if err := store.CreateAsset(ctx, asset); err != nil {
+			t.Fatalf("CreateAsset() error = %v", err)
+		}
+	}
+
+	firstPage, err := store.ListAssets(ctx, 2, "", photo.AssetFilter{Favorite: true})
+	if err != nil {
+		t.Fatalf("ListAssets() error = %v", err)
+	}
+	if !firstPage.HasMore {
+		t.Fatalf("expected first page to have more items")
+	}
+	if got := []string{firstPage.Items[0].ID, firstPage.Items[1].ID}; !equalStrings(got, []string{"asset-c", "asset-b"}) {
+		t.Fatalf("favorite first page ids = %v", got)
+	}
+
+	secondPage, err := store.ListAssets(ctx, 2, firstPage.NextCursor, photo.AssetFilter{Favorite: true})
+	if err != nil {
+		t.Fatalf("ListAssets() second page error = %v", err)
+	}
+	if secondPage.HasMore {
+		t.Fatalf("expected second page to be terminal")
+	}
+	if got := []string{secondPage.Items[0].ID}; !equalStrings(got, []string{"asset-a"}) {
+		t.Fatalf("favorite second page ids = %v", got)
+	}
+}
+
+func TestFirestorePhotoStoreListAssetsFiltersTagsAcrossCursorBoundary(t *testing.T) {
+	store := newFirestorePhotoStoreWithDocumentStore(newFakePhotoDocumentStore())
+	ctx := context.Background()
+
+	for _, asset := range []*photo.Asset{
+		{ID: "asset-d", Filename: "d.jpg", Type: "photo", MimeType: "image/jpeg", Size: 4, OriginalObjectKey: "d", UploadedAt: time.Date(2024, 1, 4, 0, 0, 0, 0, time.UTC), Metadata: map[string]any{}, Tags: []string{"Family"}},
+		{ID: "asset-c", Filename: "c.jpg", Type: "photo", MimeType: "image/jpeg", Size: 3, OriginalObjectKey: "c", UploadedAt: time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC), Metadata: map[string]any{}, Tags: []string{"Trips"}},
+		{ID: "asset-b", Filename: "b.jpg", Type: "photo", MimeType: "image/jpeg", Size: 2, OriginalObjectKey: "b", UploadedAt: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), Metadata: map[string]any{}, Tags: []string{"Family"}},
+		{ID: "asset-a", Filename: "a.jpg", Type: "photo", MimeType: "image/jpeg", Size: 1, OriginalObjectKey: "a", UploadedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Metadata: map[string]any{}, Tags: []string{"Family"}},
+	} {
+		if err := store.CreateAsset(ctx, asset); err != nil {
+			t.Fatalf("CreateAsset() error = %v", err)
+		}
+	}
+
+	firstPage, err := store.ListAssets(ctx, 2, "", photo.AssetFilter{Tag: "Family"})
+	if err != nil {
+		t.Fatalf("ListAssets() error = %v", err)
+	}
+	if !firstPage.HasMore {
+		t.Fatalf("expected first page to have more items")
+	}
+	if got := []string{firstPage.Items[0].ID, firstPage.Items[1].ID}; !equalStrings(got, []string{"asset-d", "asset-b"}) {
+		t.Fatalf("tag first page ids = %v", got)
+	}
+
+	secondPage, err := store.ListAssets(ctx, 2, firstPage.NextCursor, photo.AssetFilter{Tag: "Family"})
+	if err != nil {
+		t.Fatalf("ListAssets() second page error = %v", err)
+	}
+	if secondPage.HasMore {
+		t.Fatalf("expected second page to be terminal")
+	}
+	if got := []string{secondPage.Items[0].ID}; !equalStrings(got, []string{"asset-a"}) {
+		t.Fatalf("tag second page ids = %v", got)
 	}
 }
 
@@ -371,8 +447,34 @@ func (s *fakePhotoDocumentStore) GetAsset(ctx context.Context, id string) (*fire
 }
 
 func (s *fakePhotoDocumentStore) ListAssets(ctx context.Context, limit int, cursor *assetPageCursor) ([]*firestoreAssetDocument, error) {
+	return s.listAssetsWithFilter(limit, cursor, func(asset *firestoreAssetDocument) bool {
+		return true
+	}), nil
+}
+
+func (s *fakePhotoDocumentStore) ListFavoriteAssets(ctx context.Context, limit int, cursor *assetPageCursor) ([]*firestoreAssetDocument, error) {
+	return s.listAssetsWithFilter(limit, cursor, func(asset *firestoreAssetDocument) bool {
+		return asset.Favorite
+	}), nil
+}
+
+func (s *fakePhotoDocumentStore) ListTaggedAssets(ctx context.Context, limit int, cursor *assetPageCursor, tag string) ([]*firestoreAssetDocument, error) {
+	return s.listAssetsWithFilter(limit, cursor, func(asset *firestoreAssetDocument) bool {
+		for _, candidate := range asset.Tags {
+			if candidate == tag {
+				return true
+			}
+		}
+		return false
+	}), nil
+}
+
+func (s *fakePhotoDocumentStore) listAssetsWithFilter(limit int, cursor *assetPageCursor, matches func(*firestoreAssetDocument) bool) []*firestoreAssetDocument {
 	assets := make([]*firestoreAssetDocument, 0, len(s.assets))
 	for _, asset := range s.assets {
+		if !matches(asset) {
+			continue
+		}
 		assets = append(assets, cloneAssetDocument(asset))
 	}
 	sort.Slice(assets, func(i int, j int) bool {
@@ -398,7 +500,7 @@ func (s *fakePhotoDocumentStore) ListAssets(ctx context.Context, limit int, curs
 	if end > len(assets) {
 		end = len(assets)
 	}
-	return assets[start:end], nil
+	return assets[start:end]
 }
 
 func (s *fakePhotoDocumentStore) UpdateAssetFavorite(ctx context.Context, id string, favorite bool) error {

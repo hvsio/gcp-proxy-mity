@@ -30,6 +30,8 @@ type photoDocumentStore interface {
 	CreateAsset(ctx context.Context, asset *firestoreAssetDocument) error
 	GetAsset(ctx context.Context, id string) (*firestoreAssetDocument, error)
 	ListAssets(ctx context.Context, limit int, cursor *assetPageCursor) ([]*firestoreAssetDocument, error)
+	ListFavoriteAssets(ctx context.Context, limit int, cursor *assetPageCursor) ([]*firestoreAssetDocument, error)
+	ListTaggedAssets(ctx context.Context, limit int, cursor *assetPageCursor, tag string) ([]*firestoreAssetDocument, error)
 	UpdateAssetFavorite(ctx context.Context, id string, favorite bool) error
 	CreateAlbum(ctx context.Context, album *firestoreAlbumDocument) error
 	GetAlbum(ctx context.Context, id string) (*firestoreAlbumDocument, error)
@@ -137,7 +139,7 @@ func (s *FirestorePhotoStore) GetAsset(ctx context.Context, id string) (*photo.A
 	return firestoreDocumentToAsset(asset), nil
 }
 
-func (s *FirestorePhotoStore) ListAssets(ctx context.Context, limit int, cursor string, albumID string) (*photo.AssetPage, error) {
+func (s *FirestorePhotoStore) ListAssets(ctx context.Context, limit int, cursor string, filter photo.AssetFilter) (*photo.AssetPage, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
@@ -146,7 +148,8 @@ func (s *FirestorePhotoStore) ListAssets(ctx context.Context, limit int, cursor 
 	pageSize := limit + 1
 
 	var items []*photo.Asset
-	if albumID == "" {
+	switch {
+	case filter.AlbumID == "" && !filter.Favorite && filter.Tag == "":
 		assets, err := s.store.ListAssets(ctx, pageSize, decodedCursor)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list assets: %w", err)
@@ -155,8 +158,8 @@ func (s *FirestorePhotoStore) ListAssets(ctx context.Context, limit int, cursor 
 		for _, asset := range assets {
 			items = append(items, firestoreDocumentToAsset(asset))
 		}
-	} else {
-		memberships, err := s.store.ListAlbumMemberships(ctx, albumID, pageSize, decodedCursor)
+	case filter.AlbumID != "":
+		memberships, err := s.store.ListAlbumMemberships(ctx, filter.AlbumID, pageSize, decodedCursor)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list assets: %w", err)
 		}
@@ -166,6 +169,24 @@ func (s *FirestorePhotoStore) ListAssets(ctx context.Context, limit int, cursor 
 			if err != nil {
 				return nil, fmt.Errorf("failed to list assets: %w", err)
 			}
+			items = append(items, firestoreDocumentToAsset(asset))
+		}
+	case filter.Favorite:
+		assets, err := s.store.ListFavoriteAssets(ctx, pageSize, decodedCursor)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list assets: %w", err)
+		}
+		items = make([]*photo.Asset, 0, len(assets))
+		for _, asset := range assets {
+			items = append(items, firestoreDocumentToAsset(asset))
+		}
+	default:
+		assets, err := s.store.ListTaggedAssets(ctx, pageSize, decodedCursor, filter.Tag)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list assets: %w", err)
+		}
+		items = make([]*photo.Asset, 0, len(assets))
+		for _, asset := range assets {
 			items = append(items, firestoreDocumentToAsset(asset))
 		}
 	}
@@ -451,6 +472,54 @@ func (s *firestorePhotoDocumentStore) GetAsset(ctx context.Context, id string) (
 
 func (s *firestorePhotoDocumentStore) ListAssets(ctx context.Context, limit int, cursor *assetPageCursor) ([]*firestoreAssetDocument, error) {
 	query := s.client.Collection(firestoreAssetsCollection).
+		OrderBy("uploadedAt", firestore.Desc).
+		OrderBy("id", firestore.Desc)
+	if cursor != nil {
+		query = query.StartAfter(cursor.UploadedAt, cursor.ID)
+	}
+	docs, err := query.Limit(limit).Documents(ctx).GetAll()
+	if err != nil {
+		return nil, err
+	}
+
+	assets := make([]*firestoreAssetDocument, 0, len(docs))
+	for _, doc := range docs {
+		var asset firestoreAssetDocument
+		if err := doc.DataTo(&asset); err != nil {
+			return nil, err
+		}
+		assets = append(assets, &asset)
+	}
+	return assets, nil
+}
+
+func (s *firestorePhotoDocumentStore) ListFavoriteAssets(ctx context.Context, limit int, cursor *assetPageCursor) ([]*firestoreAssetDocument, error) {
+	query := s.client.Collection(firestoreAssetsCollection).
+		Where("favorite", "==", true).
+		OrderBy("uploadedAt", firestore.Desc).
+		OrderBy("id", firestore.Desc)
+	if cursor != nil {
+		query = query.StartAfter(cursor.UploadedAt, cursor.ID)
+	}
+	docs, err := query.Limit(limit).Documents(ctx).GetAll()
+	if err != nil {
+		return nil, err
+	}
+
+	assets := make([]*firestoreAssetDocument, 0, len(docs))
+	for _, doc := range docs {
+		var asset firestoreAssetDocument
+		if err := doc.DataTo(&asset); err != nil {
+			return nil, err
+		}
+		assets = append(assets, &asset)
+	}
+	return assets, nil
+}
+
+func (s *firestorePhotoDocumentStore) ListTaggedAssets(ctx context.Context, limit int, cursor *assetPageCursor, tag string) ([]*firestoreAssetDocument, error) {
+	query := s.client.Collection(firestoreAssetsCollection).
+		Where("tags", "array-contains", tag).
 		OrderBy("uploadedAt", firestore.Desc).
 		OrderBy("id", firestore.Desc)
 	if cursor != nil {
