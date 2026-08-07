@@ -13,4 +13,6 @@ var (
 	ErrMissingDatabaseName           = errors.New("DB_DATABASE_NAME is required")
 	ErrMissingDBUsername             = errors.New("DB_USERNAME is required")
 	ErrUnsupportedMetadataBackend    = errors.New("PHOTO_METADATA_BACKEND must be one of postgres or firestore")
+	ErrMissingIAPAudience            = errors.New("IAP_AUDIENCE is required when ALLOWED_IAP_EMAILS is set")
+	ErrMissingIAPAllowedEmails       = errors.New("ALLOWED_IAP_EMAILS is required when IAP_AUDIENCE is set")
 )
