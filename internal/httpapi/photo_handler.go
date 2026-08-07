@@ -20,6 +20,7 @@ import (
 const (
 	defaultAssetPageSize = 100
 	signedURLTTL         = 15 * time.Minute
+	albumAssetIDLimit    = 100
 )
 
 type PhotoHandler struct {
@@ -328,22 +329,23 @@ func (h *PhotoHandler) AlbumByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(parts) == 2 && parts[1] == "assets" {
-		var body struct {
-			AssetIDs []string `json:"assetIds"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
-			return
-		}
 		switch r.Method {
 		case http.MethodPost:
-			if err := h.albums.AddAssetsToAlbum(r.Context(), albumID, body.AssetIDs); err != nil {
+			assetIDs, ok := decodeAlbumMembershipAssetIDs(w, r)
+			if !ok {
+				return
+			}
+			if err := h.albums.AddAssetsToAlbum(r.Context(), albumID, assetIDs); err != nil {
 				writePhotoError(w, err)
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
 		case http.MethodDelete:
-			if err := h.albums.RemoveAssetsFromAlbum(r.Context(), albumID, body.AssetIDs); err != nil {
+			assetIDs, ok := decodeAlbumMembershipAssetIDs(w, r)
+			if !ok {
+				return
+			}
+			if err := h.albums.RemoveAssetsFromAlbum(r.Context(), albumID, assetIDs); err != nil {
 				writePhotoError(w, err)
 				return
 			}
@@ -402,6 +404,30 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func methodNotAllowed(w http.ResponseWriter) {
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+func decodeAlbumMembershipAssetIDs(w http.ResponseWriter, r *http.Request) ([]string, bool) {
+	var body struct {
+		AssetIDs []string `json:"assetIds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return nil, false
+	}
+	if len(body.AssetIDs) == 0 || len(body.AssetIDs) > albumAssetIDLimit {
+		http.Error(w, "assetIds must contain between 1 and 100 items", http.StatusBadRequest)
+		return nil, false
+	}
+	assetIDs := make([]string, 0, len(body.AssetIDs))
+	for _, assetID := range body.AssetIDs {
+		trimmed := strings.TrimSpace(assetID)
+		if trimmed == "" {
+			http.Error(w, "assetIds must contain non-empty ids", http.StatusBadRequest)
+			return nil, false
+		}
+		assetIDs = append(assetIDs, trimmed)
+	}
+	return assetIDs, true
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {

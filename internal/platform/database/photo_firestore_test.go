@@ -103,6 +103,9 @@ func TestFirestorePhotoStoreAddAndRemoveAssetsToAlbumUpdateAssetCount(t *testing
 	if err := store.AddAssetsToAlbum(ctx, "album-1", []string{"asset-1", "asset-1", "asset-2"}); err != nil {
 		t.Fatalf("AddAssetsToAlbum() error = %v", err)
 	}
+	if got := len(store.store.(*fakePhotoDocumentStore).memberships); got != 2 {
+		t.Fatalf("membership count after add = %d", got)
+	}
 	albums, err := store.ListAlbums(ctx)
 	if err != nil {
 		t.Fatalf("ListAlbums() error = %v", err)
@@ -113,6 +116,9 @@ func TestFirestorePhotoStoreAddAndRemoveAssetsToAlbumUpdateAssetCount(t *testing
 
 	if err := store.RemoveAssetsFromAlbum(ctx, "album-1", []string{"asset-2", "asset-2", "missing"}); err != nil {
 		t.Fatalf("RemoveAssetsFromAlbum() error = %v", err)
+	}
+	if got := len(store.store.(*fakePhotoDocumentStore).memberships); got != 1 {
+		t.Fatalf("membership count after remove = %d", got)
 	}
 	albums, err = store.ListAlbums(ctx)
 	if err != nil {
@@ -146,6 +152,49 @@ func TestFirestorePhotoStoreDeleteAlbumRemovesMemberships(t *testing.T) {
 	}
 	if _, err := fake.GetAlbum(ctx, "album-1"); !errors.Is(err, photo.ErrNotFound) {
 		t.Fatalf("expected deleted album to be missing, got %v", err)
+	}
+	if _, err := store.GetAsset(ctx, "asset-1"); err != nil {
+		t.Fatalf("expected asset to survive album deletion, got %v", err)
+	}
+	if len(fake.assets) != 1 {
+		t.Fatalf("expected asset document to remain, got %d", len(fake.assets))
+	}
+}
+
+func TestFirestorePhotoStoreAddAssetsToAlbumRollsBackWhenAssetMissing(t *testing.T) {
+	fake := newFakePhotoDocumentStore()
+	store := newFirestorePhotoStoreWithDocumentStore(fake)
+	ctx := context.Background()
+
+	if err := store.CreateAsset(ctx, &photo.Asset{ID: "asset-1", Filename: "1.jpg", Type: "photo", MimeType: "image/jpeg", Size: 1, OriginalObjectKey: "1", UploadedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Metadata: map[string]any{}}); err != nil {
+		t.Fatalf("CreateAsset() error = %v", err)
+	}
+	if err := store.CreateAlbum(ctx, &photo.Album{ID: "album-1", Name: "Album 1", CoverEmoji: "x", CreatedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("CreateAlbum() error = %v", err)
+	}
+
+	err := store.AddAssetsToAlbum(ctx, "album-1", []string{"asset-1", "missing"})
+	if !errors.Is(err, photo.ErrNotFound) {
+		t.Fatalf("AddAssetsToAlbum() error = %v, want %v", err, photo.ErrNotFound)
+	}
+	if got := len(fake.memberships); got != 0 {
+		t.Fatalf("expected rollback to leave 0 memberships, got %d", got)
+	}
+	albums, err := store.ListAlbums(ctx)
+	if err != nil {
+		t.Fatalf("ListAlbums() error = %v", err)
+	}
+	if albums[0].AssetCount != 0 {
+		t.Fatalf("expected rollback to preserve asset count 0, got %d", albums[0].AssetCount)
+	}
+}
+
+func TestFirestorePhotoStoreRemoveAssetsFromMissingAlbumIsNoOp(t *testing.T) {
+	store := newFirestorePhotoStoreWithDocumentStore(newFakePhotoDocumentStore())
+	ctx := context.Background()
+
+	if err := store.RemoveAssetsFromAlbum(ctx, "missing-album", []string{"asset-1"}); err != nil {
+		t.Fatalf("RemoveAssetsFromAlbum() error = %v", err)
 	}
 }
 

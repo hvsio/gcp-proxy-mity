@@ -172,6 +172,8 @@ GET /api/v1/status
 
 Photo-library routes require valid IAP identity whose email is present in `ALLOWED_IAP_EMAILS`.
 `GET /api/v1/auth/session` returns only the backend-injected `X-IAP-Email` value after signed assertion validation. Unsigned forwarded headers such as `X-Goog-Authenticated-User-Email` are not trusted.
+`POST` and `DELETE /api/v1/albums/{id}/assets` accept `1..100` non-empty `assetIds`. Duplicate IDs are idempotent, and invalid, empty, blank, or oversized batches are rejected with `400` before any album membership mutation runs.
+Deleting an album removes the album and its memberships only. Assets and GCS media remain in the library.
 Media bytes remain private in GCS; the browser receives short-lived signed URLs only after the backend validates the requester.
 
 ## Development
