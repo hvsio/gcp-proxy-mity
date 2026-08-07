@@ -107,7 +107,7 @@ func (r *fakePhotoRepo) ListJobs(ctx context.Context, limit int) ([]*photo.Job, 
 
 func (r *fakePhotoRepo) HealthCheck(ctx context.Context) error { return nil }
 
-func TestSessionReturnsIAPEmail(t *testing.T) {
+func TestSessionReturnsTrustedIAPEmail(t *testing.T) {
 	handler := NewPhotoHandler(newFakePhotoRepo(), nil, nil, nil, fakeStore{})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/session", nil)
 	req.Header.Set("X-IAP-Email", "user@example.com")

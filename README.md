@@ -55,7 +55,8 @@ CORS_ALLOWED_ORIGINS=
 When running on GCP with workload identity, leave `GOOGLE_APPLICATION_CREDENTIALS` empty.
 Database settings are only required when `ENABLE_DATABASE=true`.
 `SIGNED_URL_SERVICE_ACCOUNT_EMAIL` must be set for `/api/v1/assets/{id}/urls`; the runtime service account needs permission to sign blobs for that service account and create/read objects in the media bucket.
-`ALLOWED_IAP_EMAILS` is the single-owner allowlist used when validating IAP signed headers.
+`IAP_AUDIENCE` and `ALLOWED_IAP_EMAILS` must either both be set or both be unset. Leaving both unset keeps local development mode explicit.
+`ALLOWED_IAP_EMAILS` is the protected-deployment owner allowlist used after the backend validates the signed IAP assertion. Private-alpha deploys must provide human owner emails, and CI appends `uni-album-smoke@${PROJECT_ID}.iam.gserviceaccount.com`.
 
 ## API
 
@@ -170,6 +171,7 @@ GET /api/v1/status
 ```
 
 Photo-library routes require valid IAP identity whose email is present in `ALLOWED_IAP_EMAILS`.
+`GET /api/v1/auth/session` returns only the backend-injected `X-IAP-Email` value after signed assertion validation. Unsigned forwarded headers such as `X-Goog-Authenticated-User-Email` are not trusted.
 Media bytes remain private in GCS; the browser receives short-lived signed URLs only after the backend validates the requester.
 
 ## Development

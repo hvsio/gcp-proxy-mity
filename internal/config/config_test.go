@@ -2,6 +2,68 @@ package config
 
 import "testing"
 
+func TestValidateAllowsLocalDevelopmentWithoutIAP(t *testing.T) {
+	cfg := &Config{
+		Storage: StorageConfig{
+			GCPProjectID:  "project-id",
+			GCSBucketName: "bucket",
+		},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}
+
+func TestValidateRequiresIAPAudienceWhenAllowedEmailsConfigured(t *testing.T) {
+	cfg := &Config{
+		Storage: StorageConfig{
+			GCPProjectID:  "project-id",
+			GCSBucketName: "bucket",
+		},
+		IAP: IAPConfig{
+			AllowedEmails: []string{"owner@example.com"},
+		},
+	}
+
+	if err := cfg.Validate(); err != ErrMissingIAPAudience {
+		t.Fatalf("Validate() error = %v, want %v", err, ErrMissingIAPAudience)
+	}
+}
+
+func TestValidateRequiresIAPAllowedEmailsWhenAudienceConfigured(t *testing.T) {
+	cfg := &Config{
+		Storage: StorageConfig{
+			GCPProjectID:  "project-id",
+			GCSBucketName: "bucket",
+		},
+		IAP: IAPConfig{
+			Audience: "/projects/123/global/backendServices/456",
+		},
+	}
+
+	if err := cfg.Validate(); err != ErrMissingIAPAllowedEmails {
+		t.Fatalf("Validate() error = %v, want %v", err, ErrMissingIAPAllowedEmails)
+	}
+}
+
+func TestValidateAllowsCompleteIAPConfig(t *testing.T) {
+	cfg := &Config{
+		Storage: StorageConfig{
+			GCPProjectID:  "project-id",
+			GCSBucketName: "bucket",
+		},
+		IAP: IAPConfig{
+			Audience:      "/projects/123/global/backendServices/456",
+			AllowedEmails: []string{"owner@example.com"},
+		},
+	}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}
+
 func TestValidateSkipsDatabaseRequirementsWhenDisabled(t *testing.T) {
 	cfg := &Config{
 		Storage: StorageConfig{

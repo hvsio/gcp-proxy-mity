@@ -122,6 +122,12 @@ func (c *Config) Validate() error {
 	if c.Storage.GCSBucketName == "" {
 		return ErrMissingBucketName
 	}
+	if strings.TrimSpace(c.IAP.Audience) == "" && hasConfiguredEmails(c.IAP.AllowedEmails) {
+		return ErrMissingIAPAudience
+	}
+	if strings.TrimSpace(c.IAP.Audience) != "" && !hasConfiguredEmails(c.IAP.AllowedEmails) {
+		return ErrMissingIAPAllowedEmails
+	}
 
 	if !c.Database.Enabled {
 		return nil
@@ -224,4 +230,13 @@ func splitAndTrim(s, sep string) []string {
 		out = append(out, strings.TrimSpace(part))
 	}
 	return out
+}
+
+func hasConfiguredEmails(emails []string) bool {
+	for _, email := range emails {
+		if strings.TrimSpace(email) != "" {
+			return true
+		}
+	}
+	return false
 }

@@ -41,21 +41,33 @@ type IAPValidator struct {
 	allowedEmails map[string]struct{}
 	jwksURL       string
 	issuer        string
+	httpClient    *http.Client
 	mu            sync.RWMutex
 	jwks          *jose.JSONWebKeySet
 	jwksExpiry    time.Time
 }
 
 func NewIAPValidator(cfg *config.Config) (*IAPValidator, error) {
-	if cfg.IAP.Audience == "" || len(cfg.IAP.AllowedEmails) == 0 {
-		return nil, nil
-	}
+	audience := strings.TrimSpace(cfg.IAP.Audience)
 	allowed := make(map[string]struct{})
 	for _, e := range cfg.IAP.AllowedEmails {
-		allowed[strings.TrimSpace(strings.ToLower(e))] = struct{}{}
+		email := strings.TrimSpace(strings.ToLower(e))
+		if email == "" {
+			continue
+		}
+		allowed[email] = struct{}{}
+	}
+	if audience == "" && len(allowed) == 0 {
+		return nil, nil
+	}
+	if audience == "" {
+		return nil, config.ErrMissingIAPAudience
+	}
+	if len(allowed) == 0 {
+		return nil, config.ErrMissingIAPAllowedEmails
 	}
 	return &IAPValidator{
-		audience:      cfg.IAP.Audience,
+		audience:      audience,
 		allowedEmails: allowed,
 		jwksURL:       iapJWKSURL,
 		issuer:        iapIssuer,
@@ -81,7 +93,11 @@ func (v *IAPValidator) fetchJWKS(ctx context.Context) (*jose.JSONWebKeySet, erro
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := v.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
