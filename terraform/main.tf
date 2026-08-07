@@ -122,6 +122,50 @@ resource "google_firestore_index" "assets_by_uploaded_at" {
   }
 }
 
+resource "google_firestore_index" "favorite_assets_by_uploaded_at" {
+  project     = var.project_id
+  database    = google_firestore_database.default.name
+  collection  = "photo_assets"
+  query_scope = "COLLECTION"
+
+  fields {
+    field_path = "favorite"
+    order      = "ASCENDING"
+  }
+
+  fields {
+    field_path = "uploadedAt"
+    order      = "DESCENDING"
+  }
+
+  fields {
+    field_path = "id"
+    order      = "DESCENDING"
+  }
+}
+
+resource "google_firestore_index" "tagged_assets_by_uploaded_at" {
+  project     = var.project_id
+  database    = google_firestore_database.default.name
+  collection  = "photo_assets"
+  query_scope = "COLLECTION"
+
+  fields {
+    field_path   = "tags"
+    array_config = "CONTAINS"
+  }
+
+  fields {
+    field_path = "uploadedAt"
+    order      = "DESCENDING"
+  }
+
+  fields {
+    field_path = "id"
+    order      = "DESCENDING"
+  }
+}
+
 resource "google_firestore_index" "albums_by_created_at" {
   project     = var.project_id
   database    = google_firestore_database.default.name
@@ -288,7 +332,9 @@ resource "google_cloud_run_v2_service" "backend" {
     google_firestore_index.album_assets_by_uploaded_at,
     google_firestore_index.albums_by_created_at,
     google_firestore_index.assets_by_uploaded_at,
+    google_firestore_index.favorite_assets_by_uploaded_at,
     google_firestore_index.jobs_by_created_at,
+    google_firestore_index.tagged_assets_by_uploaded_at,
     google_project_iam_member.backend_firestore_user,
     google_service_account_iam_member.backend_token_creator,
     google_storage_bucket_iam_member.backend_storage_object_creator,

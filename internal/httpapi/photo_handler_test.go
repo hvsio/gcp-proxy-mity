@@ -21,6 +21,10 @@ type fakePhotoRepo struct {
 	albums                map[string]*photo.Album
 	memberships           map[string]map[string]struct{}
 	jobs                  []*photo.Job
+	listAssetsCalls       int
+	lastListAssetsLimit   int
+	lastListAssetsCursor  string
+	lastListAssetsFilter  photo.AssetFilter
 	addAssetsToAlbumCalls int
 	removeAssetsFromCalls int
 	mutateAssetTagsCalls  int
@@ -47,7 +51,11 @@ func (r *fakePhotoRepo) GetAsset(ctx context.Context, id string) (*photo.Asset, 
 	return asset, nil
 }
 
-func (r *fakePhotoRepo) ListAssets(ctx context.Context, limit int, cursor string, albumID string) (*photo.AssetPage, error) {
+func (r *fakePhotoRepo) ListAssets(ctx context.Context, limit int, cursor string, filter photo.AssetFilter) (*photo.AssetPage, error) {
+	r.listAssetsCalls++
+	r.lastListAssetsLimit = limit
+	r.lastListAssetsCursor = cursor
+	r.lastListAssetsFilter = filter
 	items := make([]*photo.Asset, 0, len(r.assets))
 	for _, asset := range r.assets {
 		items = append(items, asset)
@@ -294,6 +302,141 @@ func TestAssetURLsReturnSignedOriginalAndPreviewURLs(t *testing.T) {
 	}
 	if got["originalUrl"] == "" || got["previewUrl"] == "" {
 		t.Fatalf("expected signed urls, got %+v", got)
+	}
+}
+
+func TestAssetsRoutePassesSupportedFiltersAndCursor(t *testing.T) {
+	tests := []struct {
+		name           string
+		path           string
+		expectedFilter photo.AssetFilter
+		expectedCursor string
+		expectedLimit  int
+	}{
+		{
+			name:           "all assets",
+			path:           "/api/v1/assets?limit=3&cursor=next-page",
+			expectedFilter: photo.AssetFilter{},
+			expectedCursor: "next-page",
+			expectedLimit:  3,
+		},
+		{
+			name:           "album filter",
+			path:           "/api/v1/assets?albumId=album-1&cursor=album-cursor",
+			expectedFilter: photo.AssetFilter{AlbumID: "album-1"},
+			expectedCursor: "album-cursor",
+			expectedLimit:  defaultAssetPageSize,
+		},
+		{
+			name:           "favorite filter",
+			path:           "/api/v1/assets?favorite=true&cursor=favorites-cursor",
+			expectedFilter: photo.AssetFilter{Favorite: true},
+			expectedCursor: "favorites-cursor",
+			expectedLimit:  defaultAssetPageSize,
+		},
+		{
+			name:           "exact tag filter",
+			path:           "/api/v1/assets?tag=%20Family%20Trip%20&limit=5&cursor=tag-cursor",
+			expectedFilter: photo.AssetFilter{Tag: "Family Trip"},
+			expectedCursor: "tag-cursor",
+			expectedLimit:  5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newFakePhotoRepo()
+			handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
+			mux := http.NewServeMux()
+			handler.SetupRoutes(mux)
+
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			rec := httptest.NewRecorder()
+
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if repo.listAssetsCalls != 1 {
+				t.Fatalf("expected 1 repository call, got %d", repo.listAssetsCalls)
+			}
+			if repo.lastListAssetsLimit != tt.expectedLimit {
+				t.Fatalf("limit = %d, want %d", repo.lastListAssetsLimit, tt.expectedLimit)
+			}
+			if repo.lastListAssetsCursor != tt.expectedCursor {
+				t.Fatalf("cursor = %q, want %q", repo.lastListAssetsCursor, tt.expectedCursor)
+			}
+			if repo.lastListAssetsFilter != tt.expectedFilter {
+				t.Fatalf("filter = %+v, want %+v", repo.lastListAssetsFilter, tt.expectedFilter)
+			}
+		})
+	}
+}
+
+func TestAssetsRouteRejectsUnsupportedFilterCombinationsBeforeRepositoryCalls(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "album and favorite", path: "/api/v1/assets?albumId=album-1&favorite=true"},
+		{name: "album and tag", path: "/api/v1/assets?albumId=album-1&tag=Family"},
+		{name: "favorite and tag", path: "/api/v1/assets?favorite=true&tag=Family"},
+		{name: "all three", path: "/api/v1/assets?albumId=album-1&favorite=true&tag=Family"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newFakePhotoRepo()
+			handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
+			mux := http.NewServeMux()
+			handler.SetupRoutes(mux)
+
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			rec := httptest.NewRecorder()
+
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if repo.listAssetsCalls != 0 {
+				t.Fatalf("expected 0 repository calls, got %d", repo.listAssetsCalls)
+			}
+		})
+	}
+}
+
+func TestAssetsRouteRejectsInvalidFavoriteOrTagBeforeRepositoryCalls(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "favorite false", path: "/api/v1/assets?favorite=false"},
+		{name: "favorite uppercase true", path: "/api/v1/assets?favorite=TRUE"},
+		{name: "favorite empty", path: "/api/v1/assets?favorite="},
+		{name: "tag blank", path: "/api/v1/assets?tag=%20%20"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newFakePhotoRepo()
+			handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
+			mux := http.NewServeMux()
+			handler.SetupRoutes(mux)
+
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			rec := httptest.NewRecorder()
+
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if repo.listAssetsCalls != 0 {
+				t.Fatalf("expected 0 repository calls, got %d", repo.listAssetsCalls)
+			}
+		})
 	}
 }
 

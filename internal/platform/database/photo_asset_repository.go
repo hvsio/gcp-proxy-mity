@@ -64,16 +64,18 @@ func (r *PostgresAssetRepository) GetAsset(ctx context.Context, id string) (*pho
 	return assetFromRow(row)
 }
 
-func (r *PostgresAssetRepository) ListAssets(ctx context.Context, limit int, cursor string, albumID string) (*photo.AssetPage, error) {
+func (r *PostgresAssetRepository) ListAssets(ctx context.Context, limit int, cursor string, filter photo.AssetFilter) (*photo.AssetPage, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
 	offset, _ := strconv.Atoi(cursor)
 
 	rows, err := r.q.ListPhotoAssets(ctx, dbq.ListPhotoAssetsParams{
-		AlbumID:     albumID,
-		AssetOffset: int32(offset),
-		AssetLimit:  int32(limit + 1),
+		AlbumID:      filter.AlbumID,
+		FavoriteOnly: filter.Favorite,
+		Tag:          filter.Tag,
+		AssetOffset:  int32(offset),
+		AssetLimit:   int32(limit + 1),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list assets: %w", err)

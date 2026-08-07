@@ -50,6 +50,8 @@ WHERE (sqlc.arg(album_id)::text = '' OR EXISTS (
     WHERE aa.album_id = sqlc.arg(album_id)::text
       AND aa.asset_id = a.id
 ))
+  AND (NOT sqlc.arg(favorite_only)::bool OR a.favorite = TRUE)
+  AND (sqlc.arg(tag)::text = '' OR a.tags @> jsonb_build_array(sqlc.arg(tag)::text))
 ORDER BY a.uploaded_at DESC, a.id DESC
 LIMIT sqlc.arg(asset_limit)::int
 OFFSET sqlc.arg(asset_offset)::int;

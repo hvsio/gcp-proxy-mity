@@ -84,8 +84,12 @@ func (h *PhotoHandler) Assets(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
+	filter, ok := decodeAssetFilter(w, r)
+	if !ok {
+		return
+	}
 	limit := queryInt(r, "limit", defaultAssetPageSize)
-	page, err := h.assets.ListAssets(r.Context(), limit, r.URL.Query().Get("cursor"), r.URL.Query().Get("albumId"))
+	page, err := h.assets.ListAssets(r.Context(), limit, r.URL.Query().Get("cursor"), filter)
 	if err != nil {
 		writePhotoError(w, err)
 		return
@@ -554,6 +558,50 @@ func dedupeStrings(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func decodeAssetFilter(w http.ResponseWriter, r *http.Request) (photo.AssetFilter, bool) {
+	query := r.URL.Query()
+	filter := photo.AssetFilter{
+		AlbumID: strings.TrimSpace(query.Get("albumId")),
+	}
+	activeFilters := 0
+	if filter.AlbumID != "" {
+		activeFilters++
+	}
+
+	if values, ok := query["favorite"]; ok {
+		favorite := ""
+		if len(values) > 0 {
+			favorite = values[0]
+		}
+		if favorite != "true" {
+			http.Error(w, "favorite must be true when provided", http.StatusBadRequest)
+			return photo.AssetFilter{}, false
+		}
+		filter.Favorite = true
+		activeFilters++
+	}
+
+	if values, ok := query["tag"]; ok {
+		tag := ""
+		if len(values) > 0 {
+			tag = strings.TrimSpace(values[0])
+		}
+		if tag == "" {
+			http.Error(w, "tag must be non-empty when provided", http.StatusBadRequest)
+			return photo.AssetFilter{}, false
+		}
+		filter.Tag = tag
+		activeFilters++
+	}
+
+	if activeFilters > 1 {
+		http.Error(w, "only one of albumId, favorite, or tag may be provided", http.StatusBadRequest)
+		return photo.AssetFilter{}, false
+	}
+
+	return filter, true
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {

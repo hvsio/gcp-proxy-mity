@@ -1,19 +1,17 @@
 # Terraform
 
-GCP infrastructure for the read-only storage proxy:
+GCP infrastructure for the Uni Album backend:
 
 - Cloud Run service for `gcp-proxy-mity`
 - Existing Google Cloud Storage bucket, defaulting to `aj-cloud`
-- Optional Cloud SQL Postgres instance for metadata features
-- Optional existing VPC connector with private-ranges-only egress
-- Secret Manager entry for the database password when Cloud SQL is enabled
+- Firestore Native database and composite indexes for album, all-assets, favorites, and exact-tag collection reads
 - Optional backend IAP JWT validation through service environment variables
 
 ## Files
 
 ```text
 backend.tf      # Terraform state backend declaration
-main.tf         # GCP APIs, optional Cloud SQL, bucket IAM, Cloud Run
+main.tf         # GCP APIs, Firestore indexes, bucket IAM, Cloud Run
 variables.tf    # project, region, image, IAP, CORS variables
 outputs.tf      # Cloud Run URL, bucket name, optional Cloud SQL connection name
 ```
@@ -56,6 +54,8 @@ terraform init \
 terraform plan
 terraform apply
 ```
+
+Cloud Run depends on the Firestore composite indexes for `favorite + uploadedAt + id` and `tags array-contains + uploadedAt + id`, so Terraform creates those indexes before the backend revision receives traffic.
 
 ## Outputs
 
