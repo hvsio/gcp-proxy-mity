@@ -47,6 +47,7 @@ type PhotoAsset struct {
 	UploadedAt        pgtype.Timestamptz `json:"uploaded_at"`
 	Metadata          []byte             `json:"metadata"`
 	Favorite          bool               `json:"favorite"`
+	Tags              []byte             `json:"tags"`
 }
 
 type PhotoFolder struct {

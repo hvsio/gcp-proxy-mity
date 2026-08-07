@@ -16,17 +16,22 @@ import (
 )
 
 type PostgresAssetRepository struct {
-	q *dbq.Queries
+	pool *pgxpool.Pool
+	q    *dbq.Queries
 }
 
 func NewPostgresAssetRepository(pool *pgxpool.Pool) *PostgresAssetRepository {
-	return &PostgresAssetRepository{q: dbq.New(pool)}
+	return &PostgresAssetRepository{pool: pool, q: dbq.New(pool)}
 }
 
 func (r *PostgresAssetRepository) CreateAsset(ctx context.Context, asset *photo.Asset) error {
 	metadataJSON, err := json.Marshal(asset.Metadata)
 	if err != nil {
 		return fmt.Errorf("failed to marshal asset metadata: %w", err)
+	}
+	tagsJSON, err := json.Marshal(normalizeStoredTags(asset.Tags))
+	if err != nil {
+		return fmt.Errorf("failed to marshal asset tags: %w", err)
 	}
 
 	err = r.q.CreatePhotoAsset(ctx, dbq.CreatePhotoAssetParams{
@@ -40,6 +45,7 @@ func (r *PostgresAssetRepository) CreateAsset(ctx context.Context, asset *photo.
 		UploadedAt:        timestamptz(asset.UploadedAt),
 		Metadata:          metadataJSON,
 		Favorite:          asset.Favorite,
+		Tags:              tagsJSON,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create asset: %w", err)
@@ -107,6 +113,66 @@ func (r *PostgresAssetRepository) SetAssetFavorite(ctx context.Context, id strin
 	return assetFromRow(row)
 }
 
+func (r *PostgresAssetRepository) MutateAssetTags(ctx context.Context, assetIDs []string, add []string, remove []string) error {
+	uniqueIDs := uniqueStrings(assetIDs)
+	if len(uniqueIDs) == 0 {
+		return nil
+	}
+
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to start asset tag transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	qtx := r.q.WithTx(tx)
+	rows, err := qtx.GetPhotoAssetsByIDs(ctx, uniqueIDs)
+	if err != nil {
+		return fmt.Errorf("failed to load assets for tag mutation: %w", err)
+	}
+
+	rowsByID := make(map[string]dbq.PhotoAsset, len(rows))
+	for _, row := range rows {
+		rowsByID[row.ID] = row
+	}
+
+	for _, assetID := range uniqueIDs {
+		row, ok := rowsByID[assetID]
+		if !ok {
+			return photo.ErrNotFound
+		}
+		var existing []string
+		if len(row.Tags) > 0 {
+			if err := json.Unmarshal(row.Tags, &existing); err != nil {
+				return fmt.Errorf("failed to unmarshal asset tags: %w", err)
+			}
+		}
+		tags, err := applyAssetTagMutation(existing, add, remove)
+		if err != nil {
+			return err
+		}
+		tagsJSON, err := json.Marshal(tags)
+		if err != nil {
+			return fmt.Errorf("failed to marshal asset tags: %w", err)
+		}
+		affected, err := qtx.UpdatePhotoAssetTags(ctx, dbq.UpdatePhotoAssetTagsParams{
+			ID:   assetID,
+			Tags: tagsJSON,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to update asset tags: %w", err)
+		}
+		if affected != 1 {
+			return photo.ErrNotFound
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit asset tag transaction: %w", err)
+	}
+	return nil
+}
+
 func assetFromRow(row dbq.PhotoAsset) (*photo.Asset, error) {
 	asset := &photo.Asset{
 		ID:                row.ID,
@@ -119,12 +185,19 @@ func assetFromRow(row dbq.PhotoAsset) (*photo.Asset, error) {
 		UploadedAt:        row.UploadedAt.Time,
 		Metadata:          map[string]any{},
 		Favorite:          row.Favorite,
+		Tags:              []string{},
 	}
 	if len(row.Metadata) > 0 {
 		if err := json.Unmarshal(row.Metadata, &asset.Metadata); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal asset metadata: %w", err)
 		}
 	}
+	if len(row.Tags) > 0 {
+		if err := json.Unmarshal(row.Tags, &asset.Tags); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal asset tags: %w", err)
+		}
+	}
+	asset.Tags = normalizeStoredTags(asset.Tags)
 	return asset, nil
 }
 

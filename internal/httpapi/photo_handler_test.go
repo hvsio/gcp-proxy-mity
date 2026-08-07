@@ -23,6 +23,7 @@ type fakePhotoRepo struct {
 	jobs                  []*photo.Job
 	addAssetsToAlbumCalls int
 	removeAssetsFromCalls int
+	mutateAssetTagsCalls  int
 }
 
 func newFakePhotoRepo() *fakePhotoRepo {
@@ -61,6 +62,24 @@ func (r *fakePhotoRepo) SetAssetFavorite(ctx context.Context, id string, favorit
 	}
 	asset.Favorite = favorite
 	return asset, nil
+}
+
+func (r *fakePhotoRepo) MutateAssetTags(ctx context.Context, assetIDs []string, add []string, remove []string) error {
+	r.mutateAssetTagsCalls++
+	clonedAssets := clonePhotoAssets(r.assets)
+	for _, assetID := range uniqueAssetIDs(assetIDs) {
+		asset, ok := clonedAssets[assetID]
+		if !ok {
+			return photo.ErrNotFound
+		}
+		tags, err := mutateAssetTags(asset.Tags, add, remove)
+		if err != nil {
+			return err
+		}
+		asset.Tags = tags
+	}
+	r.assets = clonedAssets
+	return nil
 }
 
 func (r *fakePhotoRepo) CreateAlbum(ctx context.Context, album *photo.Album) error {
@@ -295,6 +314,215 @@ func TestFavoriteEndpointUpdatesAsset(t *testing.T) {
 	}
 	if !repo.assets["asset-1"].Favorite {
 		t.Fatalf("expected favorite true")
+	}
+}
+
+func TestAssetTagsMutationRouteIsIdempotent(t *testing.T) {
+	repo := newFakePhotoRepo()
+	repo.assets["asset-1"] = &photo.Asset{ID: "asset-1", Metadata: map[string]any{}, Tags: []string{"Family", "Trip"}}
+	repo.assets["asset-2"] = &photo.Asset{ID: "asset-2", Metadata: map[string]any{}, Tags: []string{"Trip"}}
+	handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
+	mux := http.NewServeMux()
+	handler.SetupRoutes(mux)
+
+	body := `{"assetIds":["asset-1","asset-1","asset-2"],"add":[" Summer ","Family","Summer"],"remove":["Trip","Trip"]}`
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/assets/tags", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	if repo.mutateAssetTagsCalls != 2 {
+		t.Fatalf("expected 2 repository calls, got %d", repo.mutateAssetTagsCalls)
+	}
+	if got := repo.assets["asset-1"].Tags; !equalStringSlices(got, []string{"Family", "Summer"}) {
+		t.Fatalf("asset-1 tags = %v", got)
+	}
+	if got := repo.assets["asset-2"].Tags; !equalStringSlices(got, []string{"Summer", "Family"}) {
+		t.Fatalf("asset-2 tags = %v", got)
+	}
+}
+
+func TestAssetTagsMutationRouteRejectsInvalidPayloadsBeforeRepositoryCalls(t *testing.T) {
+	longTag := strings.Repeat("a", 65)
+	tooManyTags := make([]string, 0, 21)
+	for i := 0; i < 21; i++ {
+		tooManyTags = append(tooManyTags, "tag-"+strconv.Itoa(i))
+	}
+	tooManyBody, err := json.Marshal(map[string]any{
+		"assetIds": []string{"asset-1"},
+		"add":      tooManyTags,
+	})
+	if err != nil {
+		t.Fatalf("marshal too many body: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "malformed body", body: `{"assetIds":"asset-1"}`},
+		{name: "missing asset ids", body: `{"add":["tag"]}`},
+		{name: "blank asset id", body: `{"assetIds":["asset-1","   "],"add":["tag"]}`},
+		{name: "missing mutations", body: `{"assetIds":["asset-1"],"add":[],"remove":[]}`},
+		{name: "blank add tag", body: `{"assetIds":["asset-1"],"add":["   "]}`},
+		{name: "tag too long", body: `{"assetIds":["asset-1"],"add":["` + longTag + `"]}`},
+		{name: "too many add tags", body: string(tooManyBody)},
+		{name: "too many remove tags", body: `{"assetIds":["asset-1"],"remove":["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u"]}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newFakePhotoRepo()
+			repo.assets["asset-1"] = &photo.Asset{ID: "asset-1", Metadata: map[string]any{}, Tags: []string{"existing"}}
+			handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
+			mux := http.NewServeMux()
+			handler.SetupRoutes(mux)
+
+			req := httptest.NewRequest(http.MethodPatch, "/api/v1/assets/tags", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if repo.mutateAssetTagsCalls != 0 {
+				t.Fatalf("expected 0 repository calls, got %d", repo.mutateAssetTagsCalls)
+			}
+			if got := repo.assets["asset-1"].Tags; !equalStringSlices(got, []string{"existing"}) {
+				t.Fatalf("expected tags to stay unchanged, got %v", got)
+			}
+		})
+	}
+}
+
+func TestAssetTagsMutationRouteRejectsOverlappingTagsBeforeRepositoryCalls(t *testing.T) {
+	repo := newFakePhotoRepo()
+	repo.assets["asset-1"] = &photo.Asset{ID: "asset-1", Metadata: map[string]any{}, Tags: []string{"existing"}}
+	handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
+	mux := http.NewServeMux()
+	handler.SetupRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/assets/tags", strings.NewReader(`{"assetIds":["asset-1"],"add":["Road Trip"],"remove":["Road Trip"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if repo.mutateAssetTagsCalls != 0 {
+		t.Fatalf("expected 0 repository calls, got %d", repo.mutateAssetTagsCalls)
+	}
+}
+
+func TestAssetTagsMutationRouteEnforcesUnicodeCodePointBounds(t *testing.T) {
+	acceptedTag := strings.Repeat("Åß", 32)
+	rejectedTag := acceptedTag + "Å"
+
+	t.Run("accepts 64 multi-byte code points and preserves exact case", func(t *testing.T) {
+		repo := newFakePhotoRepo()
+		repo.assets["asset-1"] = &photo.Asset{ID: "asset-1", Metadata: map[string]any{}, Tags: []string{}}
+		handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
+		mux := http.NewServeMux()
+		handler.SetupRoutes(mux)
+
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/assets/tags", strings.NewReader(`{"assetIds":["asset-1"],"add":[" `+acceptedTag+` "]}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if repo.mutateAssetTagsCalls != 1 {
+			t.Fatalf("expected 1 repository call, got %d", repo.mutateAssetTagsCalls)
+		}
+		if got := repo.assets["asset-1"].Tags; !equalStringSlices(got, []string{acceptedTag}) {
+			t.Fatalf("expected preserved tag, got %v", got)
+		}
+	})
+
+	t.Run("rejects 65 multi-byte code points before repository calls", func(t *testing.T) {
+		repo := newFakePhotoRepo()
+		repo.assets["asset-1"] = &photo.Asset{ID: "asset-1", Metadata: map[string]any{}, Tags: []string{"existing"}}
+		handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
+		mux := http.NewServeMux()
+		handler.SetupRoutes(mux)
+
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/assets/tags", strings.NewReader(`{"assetIds":["asset-1"],"add":["`+rejectedTag+`"]}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if repo.mutateAssetTagsCalls != 0 {
+			t.Fatalf("expected 0 repository calls, got %d", repo.mutateAssetTagsCalls)
+		}
+		if got := repo.assets["asset-1"].Tags; !equalStringSlices(got, []string{"existing"}) {
+			t.Fatalf("expected tags to stay unchanged, got %v", got)
+		}
+	})
+}
+
+func TestAssetTagsMutationRouteRollsBackOnMissingAsset(t *testing.T) {
+	repo := newFakePhotoRepo()
+	repo.assets["asset-1"] = &photo.Asset{ID: "asset-1", Metadata: map[string]any{}, Tags: []string{"existing"}}
+	handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
+	mux := http.NewServeMux()
+	handler.SetupRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/assets/tags", strings.NewReader(`{"assetIds":["asset-1","missing"],"add":["new"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if repo.mutateAssetTagsCalls != 1 {
+		t.Fatalf("expected 1 repository call, got %d", repo.mutateAssetTagsCalls)
+	}
+	if got := repo.assets["asset-1"].Tags; !equalStringSlices(got, []string{"existing"}) {
+		t.Fatalf("expected rollback to preserve tags, got %v", got)
+	}
+}
+
+func TestAssetTagsMutationRouteMapsTagLimitErrorToBadRequestAndRollsBack(t *testing.T) {
+	repo := newFakePhotoRepo()
+	repo.assets["asset-1"] = &photo.Asset{ID: "asset-1", Metadata: map[string]any{}, Tags: makeTagValues(49)}
+	handler := NewPhotoHandler(repo, repo, repo, repo, fakeStore{})
+	mux := http.NewServeMux()
+	handler.SetupRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/assets/tags", strings.NewReader(`{"assetIds":["asset-1"],"add":["tag-49","tag-50"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if repo.mutateAssetTagsCalls != 1 {
+		t.Fatalf("expected 1 repository call, got %d", repo.mutateAssetTagsCalls)
+	}
+	if got := repo.assets["asset-1"].Tags; !equalStringSlices(got, makeTagValues(49)) {
+		t.Fatalf("expected rollback to preserve tags, got %v", got)
 	}
 }
 
@@ -542,4 +770,82 @@ func uniqueAssetIDs(assetIDs []string) []string {
 		out = append(out, assetID)
 	}
 	return out
+}
+
+func clonePhotoAssets(in map[string]*photo.Asset) map[string]*photo.Asset {
+	out := make(map[string]*photo.Asset, len(in))
+	for key, value := range in {
+		out[key] = clonePhotoAsset(value)
+	}
+	return out
+}
+
+func clonePhotoAsset(in *photo.Asset) *photo.Asset {
+	if in == nil {
+		return nil
+	}
+	clone := *in
+	if in.Metadata != nil {
+		clone.Metadata = map[string]any{}
+		for key, value := range in.Metadata {
+			clone.Metadata[key] = value
+		}
+	}
+	if in.Tags != nil {
+		clone.Tags = append([]string(nil), in.Tags...)
+	}
+	return &clone
+}
+
+func mutateAssetTags(existing []string, add []string, remove []string) ([]string, error) {
+	tags := make([]string, 0, len(existing)+len(add))
+	seen := make(map[string]struct{}, len(existing)+len(add))
+	removeSet := make(map[string]struct{}, len(remove))
+	for _, value := range remove {
+		removeSet[value] = struct{}{}
+	}
+	for _, value := range existing {
+		if value == "" {
+			continue
+		}
+		if _, ok := removeSet[value]; ok {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		tags = append(tags, value)
+	}
+	for _, value := range add {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		tags = append(tags, value)
+	}
+	if len(tags) > 50 {
+		return nil, photo.ErrAssetTagLimitExceeded
+	}
+	return tags, nil
+}
+
+func equalStringSlices(got []string, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for idx := range got {
+		if got[idx] != want[idx] {
+			return false
+		}
+	}
+	return true
+}
+
+func makeTagValues(count int) []string {
+	tags := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		tags = append(tags, "tag-"+strconv.Itoa(i))
+	}
+	return tags
 }

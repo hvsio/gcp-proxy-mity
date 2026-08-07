@@ -71,9 +71,10 @@ INSERT INTO photo_assets (
     preview_object_key,
     uploaded_at,
     metadata,
-    favorite
+    favorite,
+    tags
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 `
 
 type CreatePhotoAssetParams struct {
@@ -87,6 +88,7 @@ type CreatePhotoAssetParams struct {
 	UploadedAt        pgtype.Timestamptz `json:"uploaded_at"`
 	Metadata          []byte             `json:"metadata"`
 	Favorite          bool               `json:"favorite"`
+	Tags              []byte             `json:"tags"`
 }
 
 func (q *Queries) CreatePhotoAsset(ctx context.Context, arg CreatePhotoAssetParams) error {
@@ -101,6 +103,7 @@ func (q *Queries) CreatePhotoAsset(ctx context.Context, arg CreatePhotoAssetPara
 		arg.UploadedAt,
 		arg.Metadata,
 		arg.Favorite,
+		arg.Tags,
 	)
 	return err
 }
@@ -211,7 +214,8 @@ SELECT
     preview_object_key,
     uploaded_at,
     metadata,
-    favorite
+    favorite,
+    tags
 FROM photo_assets
 WHERE id = $1
 `
@@ -230,8 +234,59 @@ func (q *Queries) GetPhotoAsset(ctx context.Context, id string) (PhotoAsset, err
 		&i.UploadedAt,
 		&i.Metadata,
 		&i.Favorite,
+		&i.Tags,
 	)
 	return i, err
+}
+
+const getPhotoAssetsByIDs = `-- name: GetPhotoAssetsByIDs :many
+SELECT
+    id,
+    filename,
+    media_type,
+    mime_type,
+    size,
+    original_object_key,
+    preview_object_key,
+    uploaded_at,
+    metadata,
+    favorite,
+    tags
+FROM photo_assets
+WHERE id = ANY($1::text[])
+ORDER BY id ASC
+`
+
+func (q *Queries) GetPhotoAssetsByIDs(ctx context.Context, assetIds []string) ([]PhotoAsset, error) {
+	rows, err := q.db.Query(ctx, getPhotoAssetsByIDs, assetIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []PhotoAsset
+	for rows.Next() {
+		var i PhotoAsset
+		if err := rows.Scan(
+			&i.ID,
+			&i.Filename,
+			&i.MediaType,
+			&i.MimeType,
+			&i.Size,
+			&i.OriginalObjectKey,
+			&i.PreviewObjectKey,
+			&i.UploadedAt,
+			&i.Metadata,
+			&i.Favorite,
+			&i.Tags,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getPhotoFolder = `-- name: GetPhotoFolder :one
@@ -319,7 +374,8 @@ SELECT
     a.preview_object_key,
     a.uploaded_at,
     a.metadata,
-    a.favorite
+    a.favorite,
+    a.tags
 FROM photo_assets a
 WHERE ($1::text = '' OR EXISTS (
     SELECT 1
@@ -358,6 +414,7 @@ func (q *Queries) ListPhotoAssets(ctx context.Context, arg ListPhotoAssetsParams
 			&i.UploadedAt,
 			&i.Metadata,
 			&i.Favorite,
+			&i.Tags,
 		); err != nil {
 			return nil, err
 		}
@@ -480,7 +537,8 @@ RETURNING
     preview_object_key,
     uploaded_at,
     metadata,
-    favorite
+    favorite,
+    tags
 `
 
 type SetPhotoAssetFavoriteParams struct {
@@ -502,6 +560,7 @@ func (q *Queries) SetPhotoAssetFavorite(ctx context.Context, arg SetPhotoAssetFa
 		&i.UploadedAt,
 		&i.Metadata,
 		&i.Favorite,
+		&i.Tags,
 	)
 	return i, err
 }
@@ -529,6 +588,25 @@ func (q *Queries) UpdatePhotoAlbum(ctx context.Context, arg UpdatePhotoAlbumPara
 		arg.CoverEmoji,
 		arg.UpdatedAt,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updatePhotoAssetTags = `-- name: UpdatePhotoAssetTags :execrows
+UPDATE photo_assets
+SET tags = $1::jsonb
+WHERE id = $2::text
+`
+
+type UpdatePhotoAssetTagsParams struct {
+	Tags []byte `json:"tags"`
+	ID   string `json:"id"`
+}
+
+func (q *Queries) UpdatePhotoAssetTags(ctx context.Context, arg UpdatePhotoAssetTagsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updatePhotoAssetTags, arg.Tags, arg.ID)
 	if err != nil {
 		return 0, err
 	}

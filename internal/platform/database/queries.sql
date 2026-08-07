@@ -9,9 +9,10 @@ INSERT INTO photo_assets (
     preview_object_key,
     uploaded_at,
     metadata,
-    favorite
+    favorite,
+    tags
 )
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 
 -- name: GetPhotoAsset :one
 SELECT
@@ -24,7 +25,8 @@ SELECT
     preview_object_key,
     uploaded_at,
     metadata,
-    favorite
+    favorite,
+    tags
 FROM photo_assets
 WHERE id = $1;
 
@@ -39,7 +41,8 @@ SELECT
     a.preview_object_key,
     a.uploaded_at,
     a.metadata,
-    a.favorite
+    a.favorite,
+    a.tags
 FROM photo_assets a
 WHERE (sqlc.arg(album_id)::text = '' OR EXISTS (
     SELECT 1
@@ -65,7 +68,30 @@ RETURNING
     preview_object_key,
     uploaded_at,
     metadata,
-    favorite;
+    favorite,
+    tags;
+
+-- name: GetPhotoAssetsByIDs :many
+SELECT
+    id,
+    filename,
+    media_type,
+    mime_type,
+    size,
+    original_object_key,
+    preview_object_key,
+    uploaded_at,
+    metadata,
+    favorite,
+    tags
+FROM photo_assets
+WHERE id = ANY(sqlc.arg(asset_ids)::text[])
+ORDER BY id ASC;
+
+-- name: UpdatePhotoAssetTags :execrows
+UPDATE photo_assets
+SET tags = sqlc.arg(tags)::jsonb
+WHERE id = sqlc.arg(id)::text;
 
 -- name: CreatePhotoAlbum :exec
 INSERT INTO photo_albums (
