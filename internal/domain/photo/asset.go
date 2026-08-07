@@ -2,8 +2,11 @@ package photo
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+var ErrAssetTagLimitExceeded = errors.New("asset tag limit exceeded")
 
 type Asset struct {
 	ID                string         `json:"id"`
@@ -16,6 +19,7 @@ type Asset struct {
 	UploadedAt        time.Time      `json:"uploadedAt"`
 	Metadata          map[string]any `json:"metadata"`
 	Favorite          bool           `json:"favorite"`
+	Tags              []string       `json:"tags"`
 }
 
 type AssetPage struct {
@@ -29,4 +33,5 @@ type AssetRepository interface {
 	GetAsset(ctx context.Context, id string) (*Asset, error)
 	ListAssets(ctx context.Context, limit int, cursor string, albumID string) (*AssetPage, error)
 	SetAssetFavorite(ctx context.Context, id string, favorite bool) (*Asset, error)
+	MutateAssetTags(ctx context.Context, assetIDs []string, add []string, remove []string) error
 }

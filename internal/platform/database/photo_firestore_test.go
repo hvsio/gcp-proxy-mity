@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strconv"
 	"testing"
 	"time"
 
@@ -212,6 +213,105 @@ func TestFirestorePhotoStoreSetAssetFavoritePersistsBoolean(t *testing.T) {
 	}
 	if !asset.Favorite {
 		t.Fatalf("expected favorite to be true")
+	}
+}
+
+func TestFirestorePhotoStoreGetAssetNormalizesMissingTagsWithoutUsingLegacyMetadata(t *testing.T) {
+	fake := newFakePhotoDocumentStore()
+	fake.assets["asset-1"] = &firestoreAssetDocument{
+		ID:                "asset-1",
+		Filename:          "1.jpg",
+		Type:              "photo",
+		MimeType:          "image/jpeg",
+		Size:              1,
+		OriginalObjectKey: "1",
+		UploadedAt:        time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		Metadata:          map[string]any{"tags": []string{"legacy"}},
+		Favorite:          false,
+	}
+	store := newFirestorePhotoStoreWithDocumentStore(fake)
+
+	asset, err := store.GetAsset(context.Background(), "asset-1")
+	if err != nil {
+		t.Fatalf("GetAsset() error = %v", err)
+	}
+	if asset.Tags == nil || len(asset.Tags) != 0 {
+		t.Fatalf("expected tags to normalize to empty slice, got %v", asset.Tags)
+	}
+}
+
+func TestFirestorePhotoStoreMutateAssetTagsIsIdempotent(t *testing.T) {
+	store := newFirestorePhotoStoreWithDocumentStore(newFakePhotoDocumentStore())
+	ctx := context.Background()
+
+	if err := store.CreateAsset(ctx, &photo.Asset{ID: "asset-1", Filename: "1.jpg", Type: "photo", MimeType: "image/jpeg", Size: 1, OriginalObjectKey: "1", UploadedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Metadata: map[string]any{}, Tags: []string{"Family", "Trip"}}); err != nil {
+		t.Fatalf("CreateAsset() error = %v", err)
+	}
+	if err := store.CreateAsset(ctx, &photo.Asset{ID: "asset-2", Filename: "2.jpg", Type: "photo", MimeType: "image/jpeg", Size: 2, OriginalObjectKey: "2", UploadedAt: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC), Metadata: map[string]any{}, Tags: []string{"Trip"}}); err != nil {
+		t.Fatalf("CreateAsset() error = %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := store.MutateAssetTags(ctx, []string{"asset-1", "asset-1", "asset-2"}, []string{"Summer", "Family"}, []string{"Trip"}); err != nil {
+			t.Fatalf("MutateAssetTags() error = %v", err)
+		}
+	}
+
+	asset1, err := store.GetAsset(ctx, "asset-1")
+	if err != nil {
+		t.Fatalf("GetAsset(asset-1) error = %v", err)
+	}
+	if got := asset1.Tags; !equalStrings(got, []string{"Family", "Summer"}) {
+		t.Fatalf("asset-1 tags = %v", got)
+	}
+	asset2, err := store.GetAsset(ctx, "asset-2")
+	if err != nil {
+		t.Fatalf("GetAsset(asset-2) error = %v", err)
+	}
+	if got := asset2.Tags; !equalStrings(got, []string{"Summer", "Family"}) {
+		t.Fatalf("asset-2 tags = %v", got)
+	}
+}
+
+func TestFirestorePhotoStoreMutateAssetTagsRollsBackWhenAssetMissing(t *testing.T) {
+	store := newFirestorePhotoStoreWithDocumentStore(newFakePhotoDocumentStore())
+	ctx := context.Background()
+
+	if err := store.CreateAsset(ctx, &photo.Asset{ID: "asset-1", Filename: "1.jpg", Type: "photo", MimeType: "image/jpeg", Size: 1, OriginalObjectKey: "1", UploadedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Metadata: map[string]any{}, Tags: []string{"existing"}}); err != nil {
+		t.Fatalf("CreateAsset() error = %v", err)
+	}
+
+	err := store.MutateAssetTags(ctx, []string{"asset-1", "missing"}, []string{"new"}, nil)
+	if !errors.Is(err, photo.ErrNotFound) {
+		t.Fatalf("MutateAssetTags() error = %v, want %v", err, photo.ErrNotFound)
+	}
+	asset, getErr := store.GetAsset(ctx, "asset-1")
+	if getErr != nil {
+		t.Fatalf("GetAsset() error = %v", getErr)
+	}
+	if got := asset.Tags; !equalStrings(got, []string{"existing"}) {
+		t.Fatalf("expected rollback to preserve tags, got %v", got)
+	}
+}
+
+func TestFirestorePhotoStoreMutateAssetTagsRollsBackOnTagLimit(t *testing.T) {
+	store := newFirestorePhotoStoreWithDocumentStore(newFakePhotoDocumentStore())
+	ctx := context.Background()
+
+	if err := store.CreateAsset(ctx, &photo.Asset{ID: "asset-1", Filename: "1.jpg", Type: "photo", MimeType: "image/jpeg", Size: 1, OriginalObjectKey: "1", UploadedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Metadata: map[string]any{}, Tags: makeTagValues(49)}); err != nil {
+		t.Fatalf("CreateAsset() error = %v", err)
+	}
+
+	err := store.MutateAssetTags(ctx, []string{"asset-1"}, []string{"tag-49", "tag-50"}, nil)
+	if !errors.Is(err, photo.ErrAssetTagLimitExceeded) {
+		t.Fatalf("MutateAssetTags() error = %v, want %v", err, photo.ErrAssetTagLimitExceeded)
+	}
+	asset, getErr := store.GetAsset(ctx, "asset-1")
+	if getErr != nil {
+		t.Fatalf("GetAsset() error = %v", getErr)
+	}
+	if got := asset.Tags; !equalStrings(got, makeTagValues(49)) {
+		t.Fatalf("expected rollback to preserve tags, got %v", got)
 	}
 }
 
@@ -468,6 +568,14 @@ func (t *fakePhotoDocumentTx) GetAsset(ctx context.Context, id string) (*firesto
 	return t.store.GetAsset(ctx, id)
 }
 
+func (t *fakePhotoDocumentTx) PutAsset(ctx context.Context, asset *firestoreAssetDocument) error {
+	if _, ok := t.store.assets[asset.ID]; !ok {
+		return photo.ErrNotFound
+	}
+	t.store.assets[asset.ID] = cloneAssetDocument(asset)
+	return nil
+}
+
 func (t *fakePhotoDocumentTx) GetAlbum(ctx context.Context, id string) (*firestoreAlbumDocument, error) {
 	return t.store.GetAlbum(ctx, id)
 }
@@ -542,6 +650,9 @@ func cloneAssetDocument(in *firestoreAssetDocument) *firestoreAssetDocument {
 			clone.Metadata[key] = value
 		}
 	}
+	if in.Tags != nil {
+		clone.Tags = append([]string(nil), in.Tags...)
+	}
 	return &clone
 }
 
@@ -579,4 +690,12 @@ func equalStrings(got []string, want []string) bool {
 		}
 	}
 	return true
+}
+
+func makeTagValues(count int) []string {
+	tags := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		tags = append(tags, "tag-"+strconv.Itoa(i))
+	}
+	return tags
 }

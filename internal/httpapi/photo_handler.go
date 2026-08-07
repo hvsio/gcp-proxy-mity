@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"gcp-proxy-mity/internal/domain/photo"
 	"gcp-proxy-mity/internal/storage"
@@ -18,9 +19,11 @@ import (
 )
 
 const (
-	defaultAssetPageSize = 100
-	signedURLTTL         = 15 * time.Minute
-	albumAssetIDLimit    = 100
+	defaultAssetPageSize  = 100
+	signedURLTTL          = 15 * time.Minute
+	albumAssetIDLimit     = 100
+	tagMutationValueLimit = 20
+	assetTagRuneLimit     = 64
 )
 
 type PhotoHandler struct {
@@ -157,6 +160,7 @@ func (h *PhotoHandler) UploadAssets(w http.ResponseWriter, r *http.Request) {
 				"source": "upload",
 			},
 			Favorite: false,
+			Tags:     []string{},
 		}
 		if err := h.assets.CreateAsset(r.Context(), asset); err != nil {
 			writePhotoError(w, err)
@@ -183,8 +187,25 @@ func (h *PhotoHandler) UploadAssets(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *PhotoHandler) AssetByID(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/api/v1/assets/")
-	parts := strings.Split(strings.Trim(path, "/"), "/")
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/assets/"), "/")
+	if path == "tags" {
+		if r.Method != http.MethodPatch {
+			methodNotAllowed(w)
+			return
+		}
+		assetIDs, add, remove, ok := decodeAssetTagMutationRequest(w, r)
+		if !ok {
+			return
+		}
+		if err := h.assets.MutateAssetTags(r.Context(), assetIDs, add, remove); err != nil {
+			writePhotoError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	parts := strings.Split(path, "/")
 	if len(parts) == 0 || parts[0] == "" {
 		http.Error(w, "Asset id is required", http.StatusBadRequest)
 		return
@@ -389,6 +410,8 @@ func (h *PhotoHandler) Status(w http.ResponseWriter, r *http.Request) {
 
 func writePhotoError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, photo.ErrAssetTagLimitExceeded):
+		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, photo.ErrNotFound), errors.Is(err, storage.ErrNotFound):
 		http.Error(w, "Not found", http.StatusNotFound)
 	default:
@@ -428,6 +451,109 @@ func decodeAlbumMembershipAssetIDs(w http.ResponseWriter, r *http.Request) ([]st
 		assetIDs = append(assetIDs, trimmed)
 	}
 	return assetIDs, true
+}
+
+func decodeAssetTagMutationRequest(w http.ResponseWriter, r *http.Request) ([]string, []string, []string, bool) {
+	var body struct {
+		AssetIDs []string `json:"assetIds"`
+		Add      []string `json:"add"`
+		Remove   []string `json:"remove"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+		return nil, nil, nil, false
+	}
+	if len(body.Add) == 0 && len(body.Remove) == 0 {
+		http.Error(w, "at least one tag mutation is required", http.StatusBadRequest)
+		return nil, nil, nil, false
+	}
+	assetIDs, ok := normalizeTagMutationAssetIDs(body.AssetIDs, w)
+	if !ok {
+		return nil, nil, nil, false
+	}
+	add, ok := normalizeTagMutationValues(body.Add, "add", w)
+	if !ok {
+		return nil, nil, nil, false
+	}
+	remove, ok := normalizeTagMutationValues(body.Remove, "remove", w)
+	if !ok {
+		return nil, nil, nil, false
+	}
+	if hasOverlappingStrings(add, remove) {
+		http.Error(w, "add and remove must not contain the same tag", http.StatusBadRequest)
+		return nil, nil, nil, false
+	}
+	return assetIDs, add, remove, true
+}
+
+func normalizeTagMutationAssetIDs(values []string, w http.ResponseWriter) ([]string, bool) {
+	if len(values) == 0 || len(values) > albumAssetIDLimit {
+		http.Error(w, "assetIds must contain between 1 and 100 items", http.StatusBadRequest)
+		return nil, false
+	}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			http.Error(w, "assetIds must contain non-empty ids", http.StatusBadRequest)
+			return nil, false
+		}
+		normalized = append(normalized, trimmed)
+	}
+	return dedupeStrings(normalized), true
+}
+
+func normalizeTagMutationValues(values []string, field string, w http.ResponseWriter) ([]string, bool) {
+	if len(values) > tagMutationValueLimit {
+		http.Error(w, field+" must contain at most 20 tags", http.StatusBadRequest)
+		return nil, false
+	}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			http.Error(w, field+" must contain non-empty tags", http.StatusBadRequest)
+			return nil, false
+		}
+		if utf8.RuneCountInString(trimmed) > assetTagRuneLimit {
+			http.Error(w, field+" tags must be between 1 and 64 characters", http.StatusBadRequest)
+			return nil, false
+		}
+		normalized = append(normalized, trimmed)
+	}
+	return dedupeStrings(normalized), true
+}
+
+func hasOverlappingStrings(left []string, right []string) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(left))
+	for _, value := range left {
+		seen[value] = struct{}{}
+	}
+	for _, value := range right {
+		if _, ok := seen[value]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func dedupeStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func queryInt(r *http.Request, key string, fallback int) int {

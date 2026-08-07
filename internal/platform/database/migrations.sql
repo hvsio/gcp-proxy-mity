@@ -51,13 +51,17 @@ CREATE TABLE IF NOT EXISTS photo_assets (
     preview_object_key VARCHAR(1000),
     uploaded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     metadata JSONB NOT NULL DEFAULT '{}',
-    favorite BOOLEAN NOT NULL DEFAULT FALSE
+    favorite BOOLEAN NOT NULL DEFAULT FALSE,
+    tags JSONB NOT NULL DEFAULT '[]'
 );
+
+ALTER TABLE photo_assets ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]';
 
 CREATE INDEX IF NOT EXISTS idx_photo_assets_uploaded_at ON photo_assets(uploaded_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_photo_assets_media_type ON photo_assets(media_type);
 CREATE INDEX IF NOT EXISTS idx_photo_assets_favorite ON photo_assets(favorite);
 CREATE INDEX IF NOT EXISTS idx_photo_assets_metadata ON photo_assets USING GIN(metadata);
+CREATE INDEX IF NOT EXISTS idx_photo_assets_tags ON photo_assets USING GIN(tags);
 
 CREATE TABLE IF NOT EXISTS photo_folders (
     id VARCHAR(255) PRIMARY KEY,

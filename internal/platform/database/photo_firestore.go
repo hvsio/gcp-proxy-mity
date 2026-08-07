@@ -48,6 +48,7 @@ type photoDocumentStore interface {
 
 type photoDocumentTx interface {
 	GetAsset(ctx context.Context, id string) (*firestoreAssetDocument, error)
+	PutAsset(ctx context.Context, asset *firestoreAssetDocument) error
 	GetAlbum(ctx context.Context, id string) (*firestoreAlbumDocument, error)
 	PutAlbum(ctx context.Context, album *firestoreAlbumDocument) error
 	AlbumMembershipExists(ctx context.Context, albumID string, assetID string) (bool, error)
@@ -66,6 +67,7 @@ type firestoreAssetDocument struct {
 	UploadedAt        time.Time      `firestore:"uploadedAt"`
 	Metadata          map[string]any `firestore:"metadata"`
 	Favorite          bool           `firestore:"favorite"`
+	Tags              []string       `firestore:"tags"`
 }
 
 type firestoreAlbumDocument struct {
@@ -199,6 +201,39 @@ func (s *FirestorePhotoStore) SetAssetFavorite(ctx context.Context, id string, f
 		return nil, fmt.Errorf("failed to set asset favorite: %w", err)
 	}
 	return firestoreDocumentToAsset(asset), nil
+}
+
+func (s *FirestorePhotoStore) MutateAssetTags(ctx context.Context, assetIDs []string, add []string, remove []string) error {
+	uniqueIDs := uniqueStrings(assetIDs)
+	if len(uniqueIDs) == 0 {
+		return nil
+	}
+
+	if err := s.store.RunTransaction(ctx, func(tx photoDocumentTx) error {
+		assets := make([]*firestoreAssetDocument, 0, len(uniqueIDs))
+		for _, assetID := range uniqueIDs {
+			asset, err := tx.GetAsset(ctx, assetID)
+			if err != nil {
+				return err
+			}
+			tags, err := applyAssetTagMutation(asset.Tags, add, remove)
+			if err != nil {
+				return err
+			}
+			asset.Tags = tags
+			assets = append(assets, asset)
+		}
+
+		for _, asset := range assets {
+			if err := tx.PutAsset(ctx, asset); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("failed to mutate asset tags: %w", err)
+	}
+	return nil
 }
 
 func (s *FirestorePhotoStore) CreateAlbum(ctx context.Context, album *photo.Album) error {
@@ -627,6 +662,10 @@ func (t *firestorePhotoTransaction) GetAsset(ctx context.Context, id string) (*f
 	return &asset, nil
 }
 
+func (t *firestorePhotoTransaction) PutAsset(ctx context.Context, asset *firestoreAssetDocument) error {
+	return t.tx.Set(t.assets.Doc(asset.ID), asset)
+}
+
 func (t *firestorePhotoTransaction) GetAlbum(ctx context.Context, id string) (*firestoreAlbumDocument, error) {
 	snap, err := t.tx.Get(t.albums.Doc(id))
 	if err != nil {
@@ -682,6 +721,7 @@ func assetToFirestoreDocument(asset *photo.Asset) *firestoreAssetDocument {
 		UploadedAt:        asset.UploadedAt.UTC(),
 		Metadata:          metadata,
 		Favorite:          asset.Favorite,
+		Tags:              normalizeStoredTags(asset.Tags),
 	}
 }
 
@@ -701,6 +741,7 @@ func firestoreDocumentToAsset(asset *firestoreAssetDocument) *photo.Asset {
 		UploadedAt:        asset.UploadedAt.UTC(),
 		Metadata:          metadata,
 		Favorite:          asset.Favorite,
+		Tags:              normalizeStoredTags(asset.Tags),
 	}
 }
 
@@ -802,6 +843,43 @@ func uniqueStrings(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func normalizeStoredTags(tags []string) []string {
+	normalized := uniqueStrings(tags)
+	if len(normalized) == 0 {
+		return []string{}
+	}
+	return normalized
+}
+
+func applyAssetTagMutation(existing []string, add []string, remove []string) ([]string, error) {
+	removeSet := make(map[string]struct{}, len(remove))
+	for _, value := range remove {
+		removeSet[value] = struct{}{}
+	}
+
+	current := normalizeStoredTags(existing)
+	tags := make([]string, 0, len(current)+len(add))
+	seen := make(map[string]struct{}, len(current)+len(add))
+	for _, value := range current {
+		if _, ok := removeSet[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		tags = append(tags, value)
+	}
+	for _, value := range add {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		tags = append(tags, value)
+	}
+	if len(tags) > 50 {
+		return nil, photo.ErrAssetTagLimitExceeded
+	}
+	return tags, nil
 }
 
 func chunkStrings(values []string, size int) [][]string {
